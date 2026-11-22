@@ -48,11 +48,11 @@
 
 ## Screenshots
 
-| STLR theme: sub-actions | Acrylic theme: tabs & calculator |
+| STLR theme: sub-actions | Acrylic theme: calculator |
 |---|---|
-| ![STLR theme with REAPER sub-actions](docs/theme-stlr-subactions.png) | ![Acrylic theme with browser tabs](docs/theme-acrylic-tabs.png) |
-| **Light theme** | **Settings** |
-| ![Light theme](docs/theme-light.png) | ![Settings panel](docs/settings.png) |
+| ![STLR theme with REAPER sub-actions](docs/theme-stlr-subactions.png) | ![Acrylic theme with the inline calculator](docs/theme-acrylic-calc.png) |
+| **Light theme: zero-query** | **Settings** |
+| ![Light theme with zero-query predictions](docs/theme-light.png) | ![Settings panel](docs/settings.png) |
 
 ## Installation
 
