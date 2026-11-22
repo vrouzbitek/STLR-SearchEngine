@@ -1,5 +1,6 @@
 mod answers;
 mod apps;
+mod autostart;
 mod bookmarks;
 mod brain;
 mod calc;
@@ -9,17 +10,20 @@ mod everything;
 mod icons;
 mod routes;
 mod seeder;
+mod settings;
 mod subactions;
 mod switcher;
 mod tabs;
+mod tray;
 
 use brain::{Brain, Commit, Stats, Target, Weights};
 use serde::Serialize;
-use std::path::Path;
+use settings::Settings;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, State, WindowEvent};
-use tauri_plugin_global_shortcut::ShortcutState;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const MAX_RESULTS: usize = 8;
 const ZERO_RESULTS: usize = 4;
@@ -29,6 +33,8 @@ const NO_MATCH: f32 = 5.0; // base score for learned targets whose name doesn't 
 pub struct AppState {
     brain: Mutex<Brain>,
     ctx: Mutex<String>, // foreground exe captured on Alt+Space, before our window shows
+    settings: Mutex<Settings>,
+    dir: PathBuf, // %APPDATA%/com.stlr.searchengine
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
@@ -244,13 +250,115 @@ async fn brain_reseed(app: AppHandle) -> seeder::Report {
     tauri::async_runtime::spawn_blocking(move || reseed(&app)).await.unwrap_or_default()
 }
 
-/// `paused: None` toggles. Returns the new state.
-#[tauri::command]
-fn brain_pause(paused: Option<bool>, st: State<'_, AppState>) -> bool {
-    let mut b = st.brain.lock().unwrap();
-    let next = paused.unwrap_or(!b.paused());
-    b.set_paused(next);
+/// `paused: None` toggles. Returns the new state. Shared by tray, settings panel and `/brain pause`.
+pub fn set_brain_paused(app: &AppHandle, paused: Option<bool>) -> bool {
+    let next = {
+        let st = app.state::<AppState>();
+        let mut b = st.brain.lock().unwrap();
+        let next = paused.unwrap_or(!b.paused());
+        b.set_paused(next);
+        next
+    };
+    tray::sync(app);
     next
+}
+
+#[tauri::command]
+fn brain_pause(paused: Option<bool>, app: AppHandle) -> bool {
+    set_brain_paused(&app, paused)
+}
+
+pub fn set_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let r = autostart::set(enabled);
+    let st = app.state::<AppState>();
+    let mut s = st.settings.lock().unwrap();
+    s.autostart = autostart::is_enabled(); // registry is the truth, even if the write failed
+    let _ = s.save(&st.dir.join("settings.json"));
+    drop(s);
+    tray::sync(app);
+    r
+}
+
+/// Swap the global shortcut. On failure (e.g. taken by another app) the old one stays registered.
+fn apply_shortcut(app: &AppHandle, old: &str, new: &str) -> Result<(), String> {
+    if !settings::SHORTCUTS.contains(&new) {
+        return Err(format!("unsupported shortcut {new}"));
+    }
+    let gs = app.global_shortcut();
+    let _ = gs.unregister(old);
+    gs.register(new).map_err(|e| {
+        let _ = gs.register(old);
+        format!("{new} is not available ({e})")
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Status {
+    paused: bool,
+    autostart: bool,
+    browsers: Vec<tabs::BrowserStatus>,
+    extension_path: String,
+}
+
+/// Live state for the settings panel (polled ~1s).
+#[tauri::command]
+fn get_status(st: State<'_, AppState>) -> Status {
+    // shortcut: dev-tree path; bundle `extension/` as a resource for installed builds.
+    let ext = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("extension");
+    let ext = ext.canonicalize().unwrap_or(ext);
+    Status {
+        paused: st.brain.lock().unwrap().paused(),
+        autostart: autostart::is_enabled(),
+        browsers: tabs::status(),
+        extension_path: ext.to_string_lossy().trim_start_matches(r"\\?\").to_string(),
+    }
+}
+
+#[tauri::command]
+fn get_settings(st: State<'_, AppState>) -> Settings {
+    let mut s = st.settings.lock().unwrap().clone();
+    s.autostart = autostart::is_enabled();
+    s
+}
+
+/// Apply every changed field, then persist. Returns what is actually in effect.
+#[tauri::command]
+fn update_settings(new: Settings, app: AppHandle) -> Result<Settings, String> {
+    let st = app.state::<AppState>();
+    let old = st.settings.lock().unwrap().clone();
+    let mut applied = new.clone();
+    let mut err = None;
+    if new.shortcut != old.shortcut {
+        if let Err(e) = apply_shortcut(&app, &old.shortcut, &new.shortcut) {
+            applied.shortcut = old.shortcut.clone();
+            err = Some(e);
+        }
+    }
+    if new.autostart != autostart::is_enabled() {
+        if let Err(e) = autostart::set(new.autostart) {
+            err = Some(e);
+        }
+    }
+    applied.autostart = autostart::is_enabled();
+    if new.learning_mode != old.learning_mode {
+        settings::apply_preset(&mut st.brain.lock().unwrap().w, new.learning_mode);
+        if let Err(e) = settings::write_preset(&st.dir.join("weights.json"), new.learning_mode) {
+            err = Some(format!("weights.json: {e}"));
+        }
+    }
+    if new.web_answers != old.web_answers || new.llm != old.llm {
+        answers::configure(new.web_answers, &new.llm);
+    }
+    applied.save(&st.dir.join("settings.json")).map_err(|e| format!("settings.json: {e}"))?;
+    *st.settings.lock().unwrap() = applied.clone();
+    tray::sync(&app);
+    err.map_or(Ok(applied), Err)
+}
+
+#[tauri::command]
+fn open_settings(app: AppHandle) {
+    show_settings(&app);
 }
 
 #[tauri::command]
@@ -320,19 +428,37 @@ fn apply_backdrop(w: &tauri::WebviewWindow) {
     }
 }
 
-// The window is created once (hidden) and only shown/hidden afterwards, never destroyed.
+// The windows are created once (hidden) and only shown/hidden afterwards, never destroyed.
 fn toggle(app: &AppHandle) {
     let Some(w) = app.get_webview_window("main") else { return };
     if w.is_visible().unwrap_or(false) {
         let _ = w.hide();
     } else {
-        // Context = the app the user was in; must be read before our window takes the foreground.
-        *app.state::<AppState>().ctx.lock().unwrap() = switcher::foreground_exe().unwrap_or_default();
-        let _ = w.set_size(LogicalSize::new(680.0, 72.0)); // back to bar-only before centering
+        show_search(app);
+    }
+}
+
+pub fn show_search(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("main") else { return };
+    // Context = the app the user was in; must be read before our window takes the foreground.
+    *app.state::<AppState>().ctx.lock().unwrap() = switcher::foreground_exe().unwrap_or_default();
+    let _ = w.set_size(LogicalSize::new(680.0, 72.0)); // back to bar-only before centering
+    let _ = w.center();
+    let _ = w.show();
+    let _ = w.set_focus();
+    let _ = app.emit("focus-input", ());
+}
+
+pub fn show_settings(app: &AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    if let Some(w) = app.get_webview_window("settings") {
         let _ = w.center();
         let _ = w.show();
+        let _ = w.unminimize();
         let _ = w.set_focus();
-        let _ = app.emit("focus-input", ());
+        let _ = app.emit_to("settings", "settings-opened", ());
     }
 }
 
@@ -341,8 +467,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts(["alt+space"])
-                .expect("invalid shortcut")
                 .with_handler(|app, _shortcut, event| {
                     if event.state() == ShortcutState::Pressed {
                         toggle(app);
@@ -364,7 +488,18 @@ pub fn run() {
                 eprintln!("brain.db unavailable ({e}), learning only for this session");
                 Brain::in_memory(w)
             });
-            app.manage(AppState { brain: Mutex::new(brain), ctx: Mutex::new(String::new()) });
+            let mut settings = Settings::load(&dir.join("settings.json"));
+            settings.autostart = autostart::is_enabled();
+            answers::configure(settings.web_answers, &settings.llm);
+            // Saved shortcut, falling back to the default if another app owns it.
+            let gs = app.global_shortcut();
+            if let Err(e) = gs.register(settings.shortcut.as_str()) {
+                eprintln!("shortcut {} unavailable ({e}), using {}", settings.shortcut, settings::SHORTCUTS[0]);
+                settings.shortcut = settings::SHORTCUTS[0].into();
+                let _ = gs.register(settings::SHORTCUTS[0]);
+            }
+            app.manage(AppState { brain: Mutex::new(brain), ctx: Mutex::new(String::new()), settings: Mutex::new(settings), dir: dir.clone() });
+            tray::build(app.handle())?;
             tabs::start();
             // Recent projects: rescan periodically so newly opened files show up under their app.
             std::thread::spawn(|| loop {
@@ -390,10 +525,16 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::Focused(false) = event {
+        .on_window_event(|window, event| match (window.label(), event) {
+            ("main", WindowEvent::Focused(false)) => {
                 let _ = window.hide();
             }
+            // Settings: closing just hides it (kept in RAM like the search bar).
+            ("settings", WindowEvent::CloseRequested { api, .. }) => {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             search_local,
@@ -404,6 +545,10 @@ pub fn run() {
             brain_reset,
             brain_pause,
             brain_reseed,
+            get_settings,
+            update_settings,
+            get_status,
+            open_settings,
             run_system,
             subactions,
             copy_text,

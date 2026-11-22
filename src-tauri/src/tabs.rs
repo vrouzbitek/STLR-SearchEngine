@@ -116,6 +116,19 @@ fn apply(id: u64, text: &str) {
     }
 }
 
+#[derive(serde::Serialize, Debug)]
+pub struct BrowserStatus {
+    pub browser: String,
+    pub tabs: usize,
+}
+
+/// Connected browsers for the settings panel.
+pub fn status() -> Vec<BrowserStatus> {
+    let mut v: Vec<_> = CONNS.read().unwrap().values().map(|c| BrowserStatus { browser: c.browser.clone(), tabs: c.tabs.len() }).collect();
+    v.sort_by(|a, b| a.browser.cmp(&b.browser));
+    v
+}
+
 /// Title match on the shared scale (+0.1: an app with the same name wins ties); URL substring = 3.
 pub fn search(q: &str, max: usize) -> Vec<Hit> {
     if q.is_empty() {

@@ -41,6 +41,7 @@ const wantsAnswer = (q: string) =>
   !q.startsWith("/") && !/^[\d\s.,+\-*/^()%×÷]+$/.test(q) && (q.split(/\s+/).length >= 2 || QUESTION.test(q));
 
 const COMMANDS: Info[] = [
+  { title: "/settings", detail: "open settings" },
   { title: "/brain", detail: "stats" },
   { title: "/brain reset", detail: "wipe everything learned" },
   { title: "/brain reseed", detail: "rescan taskbar, open apps, startup, recent" },
@@ -102,7 +103,7 @@ export default function App() {
           setInfo([
             { title: `${s.links} learned links · ${s.queries} queries`, detail: s.paused ? "PAUSED" : "learning" },
             ...s.top.map((t) => ({ title: `${t.prefix} → ${t.name}`, detail: t.score.toFixed(2) })),
-            ...COMMANDS.slice(1),
+            ...COMMANDS.filter((c) => c.title.startsWith("/brain ")),
           ]);
         });
       } else {
@@ -249,6 +250,10 @@ export default function App() {
   };
 
   const runCommand = async () => {
+    if (cmd === "/settings") {
+      setQuery("");
+      return invoke("open_settings");
+    }
     if (cmd === "/brain reset") {
       const r = await invoke<SeedReport>("brain_reset");
       setZero([]);

@@ -25,6 +25,19 @@
         "shadow": false,
         "backgroundColor": "#00000000",
         "visible": false
+      },
+      {
+        "label": "settings",
+        "title": "STLR Search · Settings",
+        "width": 620,
+        "height": 760,
+        "minWidth": 520,
+        "minHeight": 480,
+        "center": true,
+        "visible": false,
+        "resizable": true,
+        "theme": "Dark",
+        "backgroundColor": "#0d0d12"
       }
     ],
     "security": {

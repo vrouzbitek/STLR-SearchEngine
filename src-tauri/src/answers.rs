@@ -4,8 +4,10 @@
 use crate::routes::encode;
 use serde::Serialize;
 use serde_json::Value;
+use crate::settings::Provider;
+use serde_json::json;
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -35,20 +37,47 @@ static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
         .into()
 });
 
-static PROVIDERS: LazyLock<Vec<Box<dyn AnswerProvider>>> = LazyLock::new(providers);
+/// Active provider chain, rebuilt from settings. `enabled = false` is the privacy switch.
+struct Chain {
+    enabled: bool,
+    llm: Option<Arc<dyn AnswerProvider>>,
+    free: Vec<Arc<dyn AnswerProvider>>,
+}
+
+static CHAIN: LazyLock<RwLock<Arc<Chain>>> =
+    LazyLock::new(|| RwLock::new(Arc::new(Chain { enabled: true, llm: None, free: free_providers() })));
 static CACHE: LazyLock<Mutex<HashMap<String, Option<Answer>>>> = LazyLock::new(Default::default);
 
-/// Free, key-less sources only. Future: build this list from user settings.
-fn providers() -> Vec<Box<dyn AnswerProvider>> {
-    vec![Box::new(DuckDuckGo), Box::new(Wikipedia { lang: "pl" }), Box::new(Wikipedia { lang: "en" })]
+/// Free, key-less sources.
+fn free_providers() -> Vec<Arc<dyn AnswerProvider>> {
+    vec![Arc::new(DuckDuckGo), Arc::new(Wikipedia { lang: "pl" }), Arc::new(Wikipedia { lang: "en" })]
+}
+
+/// Apply settings: privacy switch + optional LLM in front of the free sources. Clears the cache.
+pub fn configure(web_answers: bool, llm: &crate::settings::Llm) {
+    let llm = LlmProvider::from_settings(llm).map(|p| Arc::new(p) as Arc<dyn AnswerProvider>);
+    *CHAIN.write().unwrap() = Arc::new(Chain { enabled: web_answers, llm, free: free_providers() });
+    CACHE.lock().unwrap().clear();
+}
+
+/// Only real questions go to the LLM (question word, "?", or 3+ words), so short searches like
+/// "my invoices" never leave the PC towards a paid third party; they still get free Wiki/DDG.
+fn llm_eligible(q: &str) -> bool {
+    let first = q.split_whitespace().next().unwrap_or("");
+    q.ends_with('?') || QUESTION_WORDS.contains(&first) || q.split_whitespace().count() >= 3
 }
 
 pub fn lookup(query: &str) -> Option<Answer> {
+    let chain = CHAIN.read().unwrap().clone(); // network calls run without holding the lock
+    if !chain.enabled {
+        return None;
+    }
     let q = crate::brain::norm(query);
     if let Some(hit) = CACHE.lock().unwrap().get(&q) {
         return hit.clone();
     }
-    let a = PROVIDERS.iter().find_map(|p| p.answer(&q));
+    let llm = chain.llm.as_ref().filter(|_| llm_eligible(&q)).and_then(|p| p.answer(&q));
+    let a = llm.or_else(|| chain.free.iter().find_map(|p| p.answer(&q)));
     CACHE.lock().unwrap().insert(q, a.clone());
     a
 }
@@ -107,6 +136,98 @@ impl AnswerProvider for DuckDuckGo {
     }
 }
 
+/// Optional LLM (user's own key). Groq and "openai" speak the OpenAI chat API; Gemini its own.
+pub struct LlmProvider {
+    provider: Provider,
+    key: String,
+    model: String,
+    base_url: String,
+}
+
+const LLM_SYSTEM: &str = "You are an instant-answer box in a desktop launcher. Answer in 1-2 short sentences, \
+    in the same language as the question. Plain text, no markdown, no preamble. If you are not sure, say so briefly.";
+
+static LLM_AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(8))).build().into()
+});
+
+impl LlmProvider {
+    fn from_settings(s: &crate::settings::Llm) -> Option<Self> {
+        let key = s.api_key.trim().to_string();
+        if s.provider == Provider::None || key.is_empty() {
+            return None; // empty key = free Wiki/DDG only
+        }
+        let (default_model, default_url) = match s.provider {
+            Provider::Groq => ("llama-3.1-8b-instant", "https://api.groq.com/openai/v1"),
+            Provider::Gemini => ("gemini-2.5-flash", "https://generativelanguage.googleapis.com/v1beta"),
+            _ => ("gpt-4o-mini", "https://api.openai.com/v1"),
+        };
+        let pick = |v: &str, d: &str| if v.trim().is_empty() { d.to_string() } else { v.trim().trim_end_matches('/').to_string() };
+        let base_url = if s.provider == Provider::Openai { pick(&s.base_url, default_url) } else { default_url.into() };
+        Some(Self { provider: s.provider, key, model: pick(&s.model, default_model), base_url })
+    }
+
+    fn label(&self) -> String {
+        let name = match self.provider {
+            Provider::Groq => "Groq",
+            Provider::Gemini => "Gemini",
+            _ => "LLM",
+        };
+        format!("{name} · {}", self.model)
+    }
+}
+
+fn openai_body(model: &str, q: &str) -> Value {
+    json!({
+        "model": model,
+        "messages": [{"role": "system", "content": LLM_SYSTEM}, {"role": "user", "content": q}],
+        "max_tokens": 160,
+        "temperature": 0.2
+    })
+}
+
+fn openai_text(v: &Value) -> Option<String> {
+    v["choices"][0]["message"]["content"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
+}
+
+fn gemini_body(q: &str) -> Value {
+    json!({
+        "systemInstruction": {"parts": [{"text": LLM_SYSTEM}]},
+        "contents": [{"role": "user", "parts": [{"text": q}]}],
+        // thinkingBudget 0: no hidden reasoning tokens eating the tiny output budget (2.5 Flash).
+        "generationConfig": {"maxOutputTokens": 160, "temperature": 0.2, "thinkingConfig": {"thinkingBudget": 0}}
+    })
+}
+
+fn gemini_text(v: &Value) -> Option<String> {
+    let parts = v["candidates"][0]["content"]["parts"].as_array()?;
+    let t: String = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+    Some(t.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+impl AnswerProvider for LlmProvider {
+    fn answer(&self, q: &str) -> Option<Answer> {
+        let text = match self.provider {
+            Provider::Gemini => {
+                let url = format!("{}/models/{}:generateContent", self.base_url, self.model);
+                let mut r = LLM_AGENT.post(&url).header("x-goog-api-key", &self.key).send_json(gemini_body(q)).ok()?;
+                gemini_text(&r.body_mut().read_json().ok()?)
+            }
+            _ => {
+                let url = format!("{}/chat/completions", self.base_url);
+                let mut r = LLM_AGENT
+                    .post(&url)
+                    .header("Authorization", &format!("Bearer {}", self.key))
+                    .send_json(openai_body(&self.model, q))
+                    .ok()?;
+                openai_text(&r.body_mut().read_json().ok()?)
+            }
+        }?;
+        // No source page for a generated answer: "open source" falls back to a web search.
+        Some(Answer { text: clip(&text), source: self.label(), url: format!("https://www.google.com/search?q={}", encode(q)) })
+    }
+}
+
 pub struct Wikipedia {
     pub lang: &'static str,
 }
@@ -146,6 +267,41 @@ mod tests {
         assert!(!relevant("my documents folder", "Folder", "A folder is a container"));
         assert!(relevant("ab", "x", "y")); // nothing to check
         assert!(relevant("kto napisał pan tadeusz?", "Pan Tadeusz", "Pan Tadeusz – poemat epicki Adama Mickiewicza"));
+    }
+
+    #[test]
+    fn llm_config_and_payloads() {
+        use crate::settings::Llm;
+        let none = Llm { provider: Provider::Groq, api_key: "  ".into(), ..Default::default() };
+        assert!(LlmProvider::from_settings(&none).is_none(), "empty key = free sources only");
+        assert!(LlmProvider::from_settings(&Llm { provider: Provider::None, api_key: "k".into(), ..Default::default() }).is_none());
+        let groq = LlmProvider::from_settings(&Llm { provider: Provider::Groq, api_key: "k".into(), ..Default::default() }).unwrap();
+        assert_eq!((groq.base_url.as_str(), groq.model.as_str()), ("https://api.groq.com/openai/v1", "llama-3.1-8b-instant"));
+        let custom = LlmProvider::from_settings(&Llm {
+            provider: Provider::Openai,
+            api_key: "k".into(),
+            model: "my-model".into(),
+            base_url: "http://localhost:11434/v1/".into(),
+        })
+        .unwrap();
+        assert_eq!((custom.base_url.as_str(), custom.label().as_str()), ("http://localhost:11434/v1", "LLM · my-model"));
+
+        let body = openai_body("m", "ile żyje chomik?");
+        assert_eq!(body["messages"][1]["content"], "ile żyje chomik?");
+        assert!(body["messages"][0]["content"].as_str().unwrap().contains("same language"));
+        assert_eq!(openai_text(&json!({"choices":[{"message":{"content":" Około 2–3 lat. "}}]})).as_deref(), Some("Około 2–3 lat."));
+        assert_eq!(openai_text(&json!({"error":{"message":"bad key"}})), None);
+        assert_eq!(gemini_body("q")["contents"][0]["parts"][0]["text"], "q");
+        assert_eq!(gemini_text(&json!({"candidates":[{"content":{"parts":[{"text":"A"},{"text":"B"}]}}]})).as_deref(), Some("AB"));
+    }
+
+    #[test]
+    fn privacy_switch_and_llm_eligibility() {
+        configure(false, &Default::default());
+        assert_eq!(lookup("kto napisał pan tadeusz"), None, "disabled: returns before any network call");
+        configure(true, &Default::default());
+        assert!(llm_eligible("chomiki długość życia") && llm_eligible("ile żyje chomik") && llm_eligible("why?"));
+        assert!(!llm_eligible("moje faktury") && !llm_eligible("playboi carti"));
     }
 
     #[test]
