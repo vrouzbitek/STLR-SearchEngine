@@ -1,0 +1,85 @@
+{
+  "$comment": "Community Action Packs. A pack applies to an indexed app whose target exe file name is in `exe`, or whose Start Menu name is in `names` (lowercase). Each action runs the app's own exe with `args` (working dir = exe folder) or opens `uri`. Override: %APPDATA%/com.stlr.searchengine/actions.json (replaces this file).",
+  "version": 1,
+  "packs": [
+    {
+      "exe": ["reaper.exe"],
+      "actions": [
+        { "name": "Start new project", "args": ["-new"] },
+        { "name": "New instance", "args": ["-newinst"] }
+      ]
+    },
+    {
+      "exe": ["msedge.exe"],
+      "actions": [
+        { "name": "New InPrivate window", "args": ["--inprivate"] },
+        { "name": "New window", "args": ["--new-window"] }
+      ]
+    },
+    {
+      "exe": ["chrome.exe"],
+      "actions": [
+        { "name": "New incognito window", "args": ["--incognito"] },
+        { "name": "New window", "args": ["--new-window"] }
+      ]
+    },
+    {
+      "exe": ["brave.exe"],
+      "actions": [
+        { "name": "New private window", "args": ["--incognito"] },
+        { "name": "New window", "args": ["--new-window"] }
+      ]
+    },
+    {
+      "exe": ["firefox.exe"],
+      "actions": [
+        { "name": "New private window", "args": ["-private-window"] },
+        { "name": "New window", "args": ["-new-window"] }
+      ]
+    },
+    {
+      "exe": ["code.exe"],
+      "actions": [{ "name": "New window", "args": ["-n"] }]
+    },
+    {
+      "exe": ["explorer.exe"],
+      "names": ["file explorer", "eksplorator plików"],
+      "actions": [
+        { "name": "Downloads", "args": ["shell:Downloads"] },
+        { "name": "This PC", "args": ["shell:MyComputerFolder"] },
+        { "name": "Recycle Bin", "args": ["shell:RecycleBinFolder"] }
+      ]
+    },
+    {
+      "exe": ["spotify.exe"],
+      "actions": [
+        { "name": "Liked Songs", "uri": "spotify:collection:tracks" },
+        { "name": "Search", "uri": "spotify:search:" }
+      ]
+    },
+    {
+      "names": ["discord"],
+      "actions": [{ "name": "Direct Messages & Friends", "uri": "discord://-/channels/@me" }]
+    },
+    {
+      "exe": ["obs64.exe"],
+      "actions": [
+        { "name": "Start recording", "args": ["--startrecording"] },
+        { "name": "Start streaming", "args": ["--startstreaming"] },
+        { "name": "Start replay buffer", "args": ["--startreplaybuffer"] }
+      ]
+    },
+    {
+      "exe": ["steam.exe"],
+      "actions": [
+        { "name": "Library", "uri": "steam://open/games" },
+        { "name": "Downloads", "uri": "steam://open/downloads" },
+        { "name": "Friends", "uri": "steam://open/friends" }
+      ]
+    },
+    {
+      "exe": ["blender.exe", "blender-launcher.exe"],
+      "actions": [{ "name": "Factory startup (no add-ons)", "args": ["--factory-startup"] }]
+    }
+  ]
+}

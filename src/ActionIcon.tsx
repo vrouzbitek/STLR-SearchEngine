@@ -11,7 +11,9 @@ export type ActionKind =
   | "calc"
   | "system"
   | "bookmark"
-  | "tab";
+  | "tab"
+  | "action"
+  | "recent";
 
 export const BADGE: Record<ActionKind, string> = {
   search: "Search",
@@ -27,6 +29,8 @@ export const BADGE: Record<ActionKind, string> = {
   system: "System",
   bookmark: "Bookmark",
   tab: "Tab",
+  action: "Action",
+  recent: "Recent",
 };
 
 const svg = {
@@ -127,6 +131,19 @@ export default function ActionIcon({ kind, src }: { kind: ActionKind; src?: stri
         <svg {...svg} className="shrink-0 text-sky-300">
           <rect x="3" y="5" width="18" height="15" rx="2.5" />
           <path d="M3 9.5h18M7 5v4.5" />
+        </svg>
+      );
+    case "action":
+      return (
+        <svg {...svg} className="shrink-0 text-violet-300">
+          <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" />
+        </svg>
+      );
+    case "recent":
+      return (
+        <svg {...svg} className="shrink-0 text-white/60">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 2" />
         </svg>
       );
     case "app":

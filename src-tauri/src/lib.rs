@@ -9,6 +9,7 @@ mod everything;
 mod icons;
 mod routes;
 mod seeder;
+mod subactions;
 mod switcher;
 mod tabs;
 
@@ -39,6 +40,7 @@ pub struct Hit {
     pub running: bool,      // app already has an open window -> Enter switches to it
     pub detail: Option<String>, // right-hand label override ("Edge Tab", "Chrome · github.com")
     pub icon: Option<String>,   // remote/data icon URL (tab favicons); native icons come from get_icon
+    pub child: bool,            // ↳ sub-action / recent project shown under the app above it
 }
 
 impl Hit {
@@ -46,6 +48,8 @@ impl Hit {
         let kind = match t.kind.as_str() {
             "folder" => "folder",
             "file" => "file",
+            "action" => "action",
+            "recent" => "recent",
             k => routes::WEB_KINDS.iter().find(|w| **w == k).copied().unwrap_or("app"),
         };
         Hit { name: t.name, path: t.id, kind, score, ..Default::default() }
@@ -120,15 +124,42 @@ fn search_local(query: String, st: State<'_, AppState>) -> Local {
     hits.extend(bookmarks::search(&q, MAX_RESULTS));
     hits.extend(routes::web(&query));
     // Learned targets whose name doesn't match (abandon/retype links, learned files/folders/web).
+    // Sub-actions only ever appear under their app, never as standalone top-level results.
     for (t, _) in b.top(&q, &ctx, now(), b.w.inject_threshold) {
-        if !hits.iter().any(|h| h.path.eq_ignore_ascii_case(&t.id)) {
+        if !matches!(t.kind.as_str(), "action" | "recent") && !hits.iter().any(|h| h.path.eq_ignore_ascii_case(&t.id)) {
             hits.push(Hit::learned(t, NO_MATCH));
         }
     }
     rerank(&b, &q, &ctx, &mut hits);
     hits.truncate(MAX_RESULTS);
     mark_running(&mut hits);
+    // #1 is an app: show its best 3 sub-actions / recent projects right under it.
+    if let Some(app) = hits.first().filter(|h| h.kind == "app") {
+        let mut subs = subactions::for_app(&app.path);
+        order_children(&b, &q, &ctx, &mut subs);
+        subs.truncate(INLINE_CHILDREN);
+        hits.splice(1..1, subs);
+    }
     Local { hits, ghost: b.ghost(&q) }
+}
+
+const INLINE_CHILDREN: usize = 3;
+
+/// Learned boost for this query first; ties keep the default order (primary action, recents, rest).
+fn order_children(b: &Brain, q: &str, ctx: &str, subs: &mut Vec<Hit>) {
+    let now = now();
+    let mut keyed: Vec<(f64, Hit)> = subs.drain(..).map(|h| (b.boost(q, &h.path, ctx, now), h)).collect();
+    keyed.sort_by(|a, b| b.0.total_cmp(&a.0));
+    subs.extend(keyed.into_iter().map(|(_, h)| h));
+}
+
+/// ArrowRight on an app: its full sub-action list, brain-ordered.
+#[tauri::command]
+fn subactions(path: String, query: String, st: State<'_, AppState>) -> Vec<Hit> {
+    let mut subs = subactions::for_app(&path);
+    let ctx = st.ctx.lock().unwrap().clone();
+    order_children(&st.brain.lock().unwrap(), &brain::norm(&query), &ctx, &mut subs);
+    subs
 }
 
 // Async so Everything IPC never blocks local results.
@@ -162,7 +193,7 @@ async fn zero_query(app: AppHandle) -> Zero {
         let mut hits: Vec<Hit> = b
             .top("", &ctx, now(), 0.01)
             .into_iter()
-            .filter(|(t, _)| routes::is_web(&t.kind) || Path::new(&t.id).exists())
+            .filter(|(t, _)| routes::is_web(&t.kind) || t.kind == "action" || Path::new(&t.id).exists())
             .take(ZERO_RESULTS)
             .map(|(t, boost)| Hit::learned(t, -(boost as f32)))
             .collect();
@@ -257,6 +288,9 @@ async fn launch(path: String, kind: String) -> Result<&'static str, String> {
         if kind == "system" {
             return Err("use run_system".into());
         }
+        if kind == "action" {
+            return subactions::launch(&path).map(|_| "launched");
+        }
         if (kind == "app" || switcher::is_app_path(&path)) && switcher::focus_existing(&path) {
             return Ok("switched");
         }
@@ -332,11 +366,18 @@ pub fn run() {
             });
             app.manage(AppState { brain: Mutex::new(brain), ctx: Mutex::new(String::new()) });
             tabs::start();
+            // Recent projects: rescan periodically so newly opened files show up under their app.
+            std::thread::spawn(|| loop {
+                subactions::scan_recent();
+                std::thread::sleep(std::time::Duration::from_secs(subactions::RESCAN_SECS));
+            });
             let handle = app.handle().clone();
+            let packs_override = dir.join("actions.json");
             std::thread::spawn(move || {
                 apps::index();
                 bookmarks::load();
                 apps::prewarm_targets();
+                subactions::activate(&packs_override);
                 // Cold start: seed only an empty brain (first run). Never delays the window.
                 if handle.state::<AppState>().brain.lock().unwrap().is_empty() {
                     let r = reseed(&handle);
@@ -364,6 +405,7 @@ pub fn run() {
             brain_pause,
             brain_reseed,
             run_system,
+            subactions,
             copy_text,
             instant_answer,
             get_icon,
@@ -376,6 +418,29 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picking_a_subaction_promotes_it_under_the_app() {
+        let mut b = Brain::in_memory(Weights::default());
+        let child = |name: &str, kind: &'static str| Hit { name: name.into(), path: format!("act:{name}"), kind, child: true, ..Default::default() };
+        let defaults = || vec![child("Start new project", "action"), child("a.rpp", "recent"), child("b.rpp", "recent")];
+        // User picks the 3rd sibling once; the frontend sends only siblings as `shown`.
+        let shown = defaults();
+        let commit = Commit {
+            query: "reaper".into(),
+            picked: 2,
+            shown: shown.iter().map(|h| Target { id: h.path.clone(), name: h.name.clone(), kind: h.kind.into() }).collect(),
+            abandoned: None,
+            abandoned_age_ms: 0,
+        };
+        assert!(b.record(&commit, "", now()));
+        let mut next = defaults();
+        order_children(&b, "reaper", "", &mut next);
+        assert_eq!(next[0].name, "b.rpp");
+        assert_eq!(b.boost("reaper", r"C:\SM\REAPER.lnk", "", now()), 0.0, "the app itself is never penalized");
+        // Learned sub-actions are never injected as standalone top-level results.
+        assert!(b.top("reaper", "", now(), b.w.inject_threshold).iter().all(|(t, _)| t.kind == "recent" || t.kind == "action"));
+    }
 
     #[test]
     fn one_spotify_pick_pins_it_to_top() {

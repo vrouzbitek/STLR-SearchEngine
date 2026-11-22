@@ -12,7 +12,9 @@ type Hit = {
   running: boolean;
   detail?: string | null; // right-hand label from the backend ("Edge Tab", "Chrome · github.com")
   icon?: string | null; // remote favicon (tabs)
+  child?: boolean; // ↳ sub-action / recent project of the app right above it
 };
+type Expanded = { app: Hit; items: Hit[] };
 // Need a second Enter within the same selection (Rust also refuses them without `confirmed`).
 const DANGEROUS = ["sys:shutdown", "sys:restart", "sys:empty-bin"];
 type Answer = { text: string; source: string; url: string };
@@ -31,7 +33,7 @@ const ROW_H = 44;
 const LIST_PAD = 9; // border-t 1px + py-1 8px
 const CARD_H = 89; // border-t 1px + h-[88px]
 const ANSWER_DEBOUNCE_MS = 250;
-const FILE_KINDS = ["app", "folder", "file"]; // only these have native icons; web/calc use SVG glyphs
+const FILE_KINDS = ["app", "folder", "file", "recent"]; // only these have native icons; others use SVG glyphs
 
 // Instant answers: 2+ words or a question; never for commands, math or URLs.
 const QUESTION = /^(kto|co|ile|jak|jaki|jaka|jakie|gdzie|kiedy|dlaczego|czy|what|who|how|when|where|why|which)\b|\?$/i;
@@ -61,6 +63,7 @@ export default function App() {
   const [sel, setSel] = useState(0); // -1 = answer card
   const [answer, setAnswer] = useState<Answer | null>(null);
   const [armed, setArmed] = useState<string | null>(null); // path of a dangerous command awaiting 2nd Enter
+  const [expanded, setExpanded] = useState<Expanded | null>(null); // ArrowRight on an app: its full sub-list
   const [icons, setIcons] = useState<Record<string, string>>({});
   const requested = useRef(new Set<string>());
   const reqId = useRef(0);
@@ -73,7 +76,7 @@ export default function App() {
 
   const cmd = query.trim().toLowerCase();
   const isCmd = cmd.startsWith("/");
-  const list: Hit[] = isCmd ? [] : query ? hits : zero;
+  const list: Hit[] = isCmd ? [] : expanded ? [expanded.app, ...expanded.items] : query ? hits : zero;
   const infoRows = isCmd ? (flash ? [flash, ...info] : info) : [];
   const rowCount = isCmd ? infoRows.length : list.length;
   const card = !isCmd && query ? answer : null;
@@ -85,6 +88,7 @@ export default function App() {
   useEffect(() => {
     const id = ++reqId.current;
     setSel(0);
+    setExpanded(null);
     if (!query.trim()) {
       setHits([]);
       setGhostFull("");
@@ -115,9 +119,13 @@ export default function App() {
     Promise.all([local, invoke<Hit[]>("search_files", { query })]).then(([l, f]) => {
       if (id !== reqId.current) return;
       const seen = new Set(l.hits.map((h) => h.path.toLowerCase()));
-      // Stable sort on the shared score: local results win ties.
-      const merged = [...l.hits, ...f.filter((h) => !seen.has(h.path.toLowerCase()))].sort((x, y) => x.score - y.score);
-      setHits(merged.slice(0, MAX));
+      // Stable sort on the shared score: local results win ties. Children stay glued under their app.
+      const kids = l.hits.filter((h) => h.child);
+      const merged = [...l.hits.filter((h) => !h.child), ...f.filter((h) => !seen.has(h.path.toLowerCase()))]
+        .sort((x, y) => x.score - y.score)
+        .slice(0, MAX);
+      if (kids.length && merged[0]?.path === l.hits[0]?.path) merged.splice(1, 0, ...kids);
+      setHits(merged);
     });
   }, [query]);
 
@@ -218,12 +226,15 @@ export default function App() {
       return done();
     }
     const ab = abandoned.current;
+    // Skip penalties only among peers: a ↳ pick ranks against its siblings (never penalizes the app itself),
+    // a top-level pick ranks against top-level results (never the ↳ rows).
+    const peers = list.filter((x) => !!x.child === !!h.child);
     // The only path that writes to the brain: an explicit pick.
     invoke("commit", {
       commit: {
         query,
-        picked: i,
-        shown: list.map((x) => ({ id: x.path, name: x.name, kind: x.kind })),
+        picked: peers.indexOf(h),
+        shown: peers.map((x) => ({ id: x.path, name: x.name, kind: x.kind })),
         abandoned: ab?.text ?? null,
         abandonedAgeMs: ab ? Date.now() - ab.t : 0,
       },
@@ -276,6 +287,21 @@ export default function App() {
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSel((s) => Math.max(s - 1, card ? -1 : 0));
+    } else if (e.key === "ArrowRight" && !expanded && current?.kind === "app") {
+      // Only when the caret is at the end, so ArrowRight still moves the cursor while editing.
+      const el = inputRef.current;
+      if (el && el.selectionStart !== el.value.length) return;
+      e.preventDefault();
+      const app = current;
+      invoke<Hit[]>("subactions", { path: app.path, query }).then((items) => {
+        if (!items.length) return;
+        setExpanded({ app, items });
+        setSel(1);
+      });
+    } else if (e.key === "ArrowLeft" && expanded) {
+      e.preventDefault();
+      setExpanded(null);
+      setSel(0);
     }
   };
 
@@ -306,6 +332,9 @@ export default function App() {
         </div>
         {paused && <span className={`${badge} bg-amber-400/15 text-amber-300`}>PAUSED</span>}
         {query && !isCmd && <span className={`${badge} bg-white/15 text-white/80`}>{BADGE[current?.kind ?? "search"]}</span>}
+        {current?.kind === "app" && !expanded && list.some((h) => h.child) && (
+          <span className="shrink-0 text-[11px] text-white/35" title="ArrowRight: all actions">→</span>
+        )}
       </div>
       {card && (
         <div
@@ -342,11 +371,16 @@ export default function App() {
                   onMouseMove={() => setSel(i)}
                   onMouseDown={(e) => e.preventDefault()} // keep input focus
                   onClick={() => run(i)}
-                  className={`h-11 flex items-center gap-3 px-5 cursor-default ${i === sel ? "bg-white/15" : ""}`}
+                  className={`h-11 flex items-center gap-3 pr-5 cursor-default ${h.child ? "pl-10" : "pl-5"} ${i === sel ? "bg-white/15" : ""}`}
                 >
+                  {h.child && <span className="-mr-1 text-sm text-white/40">↳</span>}
                   <ActionIcon kind={h.kind} src={icons[h.path] ?? h.icon ?? undefined} />
-                  <span className="flex-1 truncate text-sm text-white">{h.name}</span>
-                  {armed === h.path ? (
+                  <span className={`flex-1 truncate text-sm ${h.child ? "text-white/85" : "text-white"}`}>{h.name}</span>
+                  {h.child ? (
+                    <span className={`${badge} ${h.kind === "action" ? "bg-violet-400/15 text-violet-200" : "bg-white/10 text-white/60"}`}>
+                      {BADGE[h.kind]}
+                    </span>
+                  ) : armed === h.path ? (
                     <span className="text-xs font-medium text-rose-300">Press Enter again to confirm</span>
                   ) : h.running ? (
                     <span className="flex items-center gap-1.5 text-xs text-emerald-300">

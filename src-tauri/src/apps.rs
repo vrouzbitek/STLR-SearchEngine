@@ -24,6 +24,11 @@ pub fn index() {
     *APPS.write().unwrap() = out;
 }
 
+/// (name, Start Menu path) of every indexed app.
+pub fn all() -> Vec<(String, String)> {
+    APPS.read().unwrap().iter().map(|a| (a.name.clone(), a.path.clone())).collect()
+}
+
 fn paths() -> Vec<String> {
     APPS.read().unwrap().iter().map(|a| a.path.clone()).collect()
 }
