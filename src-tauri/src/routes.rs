@@ -74,11 +74,11 @@ const SITES: &[(&[&str], &str, &str, &str)] = &[
     (&["spotify", "spoti", "spot", "spt"], "Spotify", "spotify:search:", "spotify"),
     (&["google", "gg"], "Google", "https://www.google.com/search?q=", "google"),
     (&["img", "images", "obrazy"], "Google Images", "https://www.google.com/search?tbm=isch&q=", "url"),
-    (&["maps", "gmaps", "mapy"], "Google Maps", "https://www.google.com/maps/search/", "url"),
+    (&["maps", "gmaps", "mapy"], "Google Maps", "https://maps.google.com/maps?q=", "url"),
     (&["translate", "tlumacz", "gt"], "Google Translate", "https://translate.google.com/?sl=auto&text=", "url"),
     (&["gmail", "mail"], "Gmail", "https://mail.google.com/mail/u/0/#search/", "url"),
     (&["drive", "gdrive", "dysk"], "Google Drive", "https://drive.google.com/drive/search?q=", "url"),
-    (&["ig", "insta", "instagram"], "Instagram", "", "instagram"),
+    (&["ig", "insta", "instagram"], "Instagram", "https://www.instagram.com/", "instagram"),
     (&["tt", "tiktok"], "TikTok", "https://www.tiktok.com/search?q=", "url"),
     (&["x", "twitter"], "X", "https://x.com/search?q=", "url"),
     (&["fb", "facebook"], "Facebook", "https://www.facebook.com/search/top?q=", "url"),
@@ -121,21 +121,28 @@ fn instagram(q: &str) -> String {
     }
 }
 
-/// "yt austin evans" -> YouTube search for "austin evans". Needs a non-empty rest, so "spotify" alone stays the app.
+/// Bare short alias ("yt", "x") opens the homepage below prefix-matching apps (1) but above files (2).
+const SHORT_HOME_SCORE: f32 = 1.5;
+
+/// "yt austin evans" -> YouTube search for "austin evans"; bare "youtube" / "yt" -> youtube.com.
+/// An exact app name still wins, so "spotify" alone stays the Spotify app.
 fn keyword(name: &str, q: &str) -> Option<Hit> {
-    let (kw, rest) = q.split_once(' ')?;
+    let (kw, rest) = q.split_once(' ').unwrap_or((q, ""));
     let rest = rest.trim();
     let &(_, label, prefix, kind) = SITES.iter().find(|s| s.0.contains(&kw))?;
-    if rest.is_empty() {
-        return None;
-    }
-    let shown = name.split_once(char::is_whitespace).map_or(rest, |(_, r)| r.trim());
-    let path = if kind == "instagram" { instagram(rest) } else { format!("{prefix}{}", encode(rest)) };
     let kind = WEB_KINDS.into_iter().find(|k| *k == kind)?;
-    let mut h = hit(shown, path, kind, KEYWORD_SCORE);
+    let host = prefix.split('/').nth(2); // None for spotify: URIs
+    let mut h = if rest.is_empty() {
+        let home = if kind == "spotify" { "spotify:".to_string() } else { format!("https://{}/", host?) };
+        hit(label, home, kind, if kw.len() >= 4 { KEYWORD_SCORE } else { SHORT_HOME_SCORE })
+    } else {
+        let shown = name.split_once(char::is_whitespace).map_or(rest, |(_, r)| r.trim());
+        let path = if kind == "instagram" { instagram(rest) } else { format!("{prefix}{}", encode(rest)) };
+        hit(shown, path, kind, KEYWORD_SCORE)
+    };
     if kind == "url" {
-        h.detail = Some(format!("Search {label}"));
-        let host = prefix.split('/').nth(2)?;
+        let host = host?;
+        h.detail = Some(if rest.is_empty() { format!("Open {host}") } else { format!("Search {label}") });
         h.icon = Some(format!("https://www.google.com/s2/favicons?domain={host}&sz=64"));
     }
     Some(h)
@@ -191,7 +198,7 @@ mod tests {
 
     #[test]
     fn keyword_routes() {
-        let first = |q: &str| web(q).into_iter().find(|h| h.score == KEYWORD_SCORE);
+        let first = |q: &str| web(q).into_iter().find(|h| h.score < ROUTE_BASE);
         let yt = first("yt Austin Evans").unwrap();
         assert_eq!((yt.kind, yt.name.as_str()), ("youtube", "Austin Evans"));
         assert_eq!(yt.path, "https://www.youtube.com/results?search_query=austin%20evans");
@@ -203,9 +210,15 @@ mod tests {
         let tw = first("tw xqc").unwrap();
         assert_eq!((tw.kind, tw.detail.as_deref()), ("url", Some("Search Twitch")));
         assert!(tw.icon.unwrap().contains("domain=www.twitch.tv"));
-        for no in ["spotify", "yt", "yt ", "austin evans", "/yt x"] {
+        for no in ["austin evans", "/yt x", "youtubex"] {
             assert!(first(no).is_none(), "{no:?}");
         }
+        // Bare keyword -> homepage; full names beat folders like "03 YouTube" (2), short aliases yield to app prefixes (1).
+        let home = first("youtube").unwrap();
+        assert_eq!((home.path.as_str(), home.name.as_str(), home.score), ("https://www.youtube.com/", "YouTube", KEYWORD_SCORE));
+        assert_eq!(first("yt ").unwrap().score, SHORT_HOME_SCORE);
+        assert_eq!(first("spotify").unwrap().path, "spotify:");
+        assert_eq!(first("tw").unwrap().detail.as_deref(), Some("Open www.twitch.tv"));
         // Every row builds a URL (kind known, host parseable).
         for s in SITES {
             assert!(first(&format!("{} x", s.0[0])).is_some(), "{}", s.1);
