@@ -62,7 +62,7 @@ export default function ActionIcon({ kind, src }: { kind: ActionKind; src?: stri
       );
     case "file":
       return (
-        <svg {...svg} className="shrink-0 text-white/60">
+        <svg {...svg} className="shrink-0 text-[var(--muted)]">
           <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />
           <path d="M14 3v5h5" />
         </svg>
@@ -141,7 +141,7 @@ export default function ActionIcon({ kind, src }: { kind: ActionKind; src?: stri
       );
     case "recent":
       return (
-        <svg {...svg} className="shrink-0 text-white/60">
+        <svg {...svg} className="shrink-0 text-[var(--muted)]">
           <circle cx="12" cy="12" r="9" />
           <path d="M12 7v5l3 2" />
         </svg>
@@ -155,7 +155,7 @@ export default function ActionIcon({ kind, src }: { kind: ActionKind; src?: stri
       );
     default:
       return (
-        <svg {...svg} className="shrink-0 text-white/40">
+        <svg {...svg} className="shrink-0 text-[var(--faint)]">
           <circle cx="11" cy="11" r="7" />
           <path d="m20 20-3.5-3.5" />
         </svg>

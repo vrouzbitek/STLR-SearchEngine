@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import ActionIcon, { ActionKind, BADGE } from "./ActionIcon";
+import { useTheme } from "./theme";
 
 type Hit = {
   name: string;
@@ -54,6 +55,7 @@ const hide = () => win.hide();
 const parentDir = (p: string) => p.slice(0, Math.max(p.lastIndexOf("\\"), 0));
 
 export default function App() {
+  useTheme();
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<Hit[]>([]);
   const [zero, setZero] = useState<Hit[]>([]);
@@ -310,18 +312,17 @@ export default function App() {
     }
   };
 
-  // Shared by input and ghost layer so both sit on the same baseline.
-  const line = "m-0 p-0 border-0 h-8 text-2xl leading-8 font-light font-sans";
-  const badge = "shrink-0 rounded-md px-2 py-0.5 text-xs";
+  // Shared by input and ghost layer so both sit on the same baseline (font comes from the theme).
+  const line = "m-0 p-0 border-0 h-8 text-2xl leading-8 font-light";
   return (
-    // Fills the whole window: DWM Acrylic + 8px native round corners sit exactly behind this container.
-    <div className="h-full flex flex-col rounded-lg bg-black/40 border border-white/15 overflow-hidden text-white">
+    // Fills the whole window: native DWM (Acrylic / corners) sits exactly behind this container.
+    <div className="h-full flex flex-col overflow-hidden rounded-[var(--radius)] border border-[var(--line)] bg-[var(--bg)] text-[var(--fg)]">
       <div className="h-[70px] shrink-0 flex items-center gap-3 px-5">
         <ActionIcon kind={current?.kind ?? "search"} src={current && (icons[current.path] ?? current.icon ?? undefined)} />
         <div className="relative flex-1">
           <div aria-hidden className={`absolute inset-0 whitespace-pre pointer-events-none ${line}`}>
             <span className="invisible">{query}</span>
-            <span className="text-white/40">{ghost}</span>
+            <span className="text-[var(--faint)]">{ghost}</span>
           </div>
           <input
             ref={inputRef}
@@ -332,13 +333,18 @@ export default function App() {
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Search..."
-            className={`relative block w-full bg-transparent outline-none text-white placeholder:text-white/40 caret-white ${line}`}
+            className={`relative block w-full bg-transparent outline-none text-[var(--fg)] placeholder:text-[var(--faint)] caret-[var(--fg)] ${line}`}
           />
         </div>
-        {paused && <span className={`${badge} bg-amber-400/15 text-amber-300`}>PAUSED</span>}
-        {query && !isCmd && <span className={`${badge} bg-white/15 text-white/80`}>{BADGE[current?.kind ?? "search"]}</span>}
+        {paused && (
+          <span className="flex items-center gap-1.5">
+            <span className="dot dot-warn" />
+            <span className="chip chip-warn">Paused</span>
+          </span>
+        )}
+        {query && !isCmd && <span className="chip">{BADGE[current?.kind ?? "search"]}</span>}
         {current?.kind === "app" && !expanded && list.some((h) => h.child) && (
-          <span className="shrink-0 text-[11px] text-white/35" title="ArrowRight: all actions">→</span>
+          <span className="shrink-0 text-[11px] text-[var(--faint)]" title="ArrowRight: all actions">→</span>
         )}
       </div>
       {card && (
@@ -346,15 +352,15 @@ export default function App() {
           onMouseMove={() => setSel(-1)}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => copy(card.text)}
-          className={`h-[88px] shrink-0 border-t border-white/15 px-5 py-2.5 flex gap-3 cursor-default ${sel < 0 ? "bg-white/15" : ""}`}
+          className={`h-[88px] shrink-0 border-t border-[var(--line)] px-5 py-2.5 flex gap-3 cursor-default ${sel < 0 ? "bg-[var(--sel)]" : ""}`}
         >
-          <p className="flex-1 text-[13px] leading-5 text-white/90 line-clamp-3">{card.text}</p>
+          <p className="flex-1 text-[13px] leading-5 line-clamp-3">{card.text}</p>
           <button
             onClick={(e) => {
               e.stopPropagation();
               openSource(card);
             }}
-            className="self-start shrink-0 text-[11px] text-white/50 hover:text-white/80"
+            className="self-start shrink-0 text-[11px] text-[var(--muted)] hover:text-[var(--fg)]"
             title="Open source (Ctrl+Enter)"
           >
             {card.source} ↗
@@ -362,12 +368,12 @@ export default function App() {
         </div>
       )}
       {rowCount > 0 && (
-        <ul className="border-t border-white/15 py-1">
+        <ul className="border-t border-[var(--line)] py-1">
           {isCmd
             ? infoRows.map((r, i) => (
                 <li key={i} className="h-11 flex items-center gap-3 px-5">
-                  <span className="flex-1 truncate text-sm text-white">{r.title}</span>
-                  <span className="max-w-[45%] truncate text-xs text-white/60">{r.detail}</span>
+                  <span className="flex-1 truncate text-sm">{r.title}</span>
+                  <span className="max-w-[45%] truncate text-xs text-[var(--muted)]">{r.detail}</span>
                 </li>
               ))
             : list.map((h, i) => (
@@ -376,31 +382,34 @@ export default function App() {
                   onMouseMove={() => setSel(i)}
                   onMouseDown={(e) => e.preventDefault()} // keep input focus
                   onClick={() => run(i)}
-                  className={`h-11 flex items-center gap-3 pr-5 cursor-default ${h.child ? "pl-10" : "pl-5"} ${i === sel ? "bg-white/15" : ""}`}
+                  className={`h-11 flex items-center gap-3 pr-5 cursor-default ${h.child ? "pl-10" : "pl-5"} ${i === sel ? "bg-[var(--sel)]" : ""}`}
                 >
-                  {h.child && <span className="-mr-1 text-sm text-white/40">↳</span>}
+                  {h.child && <span className="-mr-1 text-sm text-[var(--faint)]">↳</span>}
                   <ActionIcon kind={h.kind} src={icons[h.path] ?? h.icon ?? undefined} />
-                  <span className={`flex-1 truncate text-sm ${h.child ? "text-white/85" : "text-white"}`}>{h.name}</span>
+                  <span className={`flex-1 truncate text-sm ${h.child ? "text-[var(--muted)]" : ""}`}>{h.name}</span>
                   {h.child ? (
-                    <span className={`${badge} ${h.kind === "action" ? "bg-violet-400/15 text-violet-200" : "bg-white/10 text-white/60"}`}>
-                      {BADGE[h.kind]}
-                    </span>
+                    <span className={`chip ${h.kind === "action" ? "chip-action" : ""}`}>{BADGE[h.kind]}</span>
                   ) : armed === h.path ? (
-                    <span className="text-xs font-medium text-rose-300">Press Enter again to confirm</span>
-                  ) : h.running ? (
-                    <span className="flex items-center gap-1.5 text-xs text-emerald-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                      Switch
+                    <span className="flex items-center gap-1.5">
+                      <span className="dot dot-warn" />
+                      <span className="chip chip-warn">Press Enter again to confirm</span>
                     </span>
+                  ) : h.running ? (
+                    <span className="flex items-center gap-1.5">
+                      <span className="dot" />
+                      <span className="chip">Switch</span>
+                    </span>
+                  ) : h.kind === "tab" ? (
+                    <span className="chip">{h.detail ?? "Tab"}</span>
                   ) : (
-                    <span className="max-w-[45%] truncate text-xs text-white/60">
+                    <span className="max-w-[45%] truncate text-xs text-[var(--muted)]">
                       {h.detail
                         ? h.detail
                         : h.kind === "calc"
-                        ? "Enter to copy"
-                        : h.kind === "folder" || h.kind === "file"
-                          ? parentDir(h.path)
-                          : BADGE[h.kind]}
+                          ? "Enter to copy"
+                          : h.kind === "folder" || h.kind === "file"
+                            ? parentDir(h.path)
+                            : BADGE[h.kind]}
                     </span>
                   )}
                 </li>

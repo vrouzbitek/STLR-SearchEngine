@@ -16,6 +16,17 @@ pub enum LearningMode {
     Aggressive,
 }
 
+/// Visual theme for both windows; also drives native DWM (backdrop, corners, dark title bar).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    Acrylic,
+    Stlr,
+    Dark,
+    Light,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
@@ -38,6 +49,7 @@ pub struct Llm {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
+    pub theme: Theme,
     pub shortcut: String,
     /// Mirrors the HKCU Run key (the registry is the source of truth, see autostart.rs).
     pub autostart: bool,
@@ -50,6 +62,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            theme: Theme::Acrylic,
             shortcut: SHORTCUTS[0].into(),
             autostart: false,
             learning_mode: LearningMode::Balanced,
@@ -126,6 +139,7 @@ mod tests {
     fn save_load_roundtrip() {
         let p = tmp("settings.json");
         let s = Settings {
+            theme: Theme::Stlr,
             shortcut: "Ctrl+Space".into(),
             autostart: true,
             learning_mode: LearningMode::Aggressive,
@@ -136,6 +150,7 @@ mod tests {
         assert_eq!(Settings::load(&p), s);
         let raw = std::fs::read_to_string(&p).unwrap();
         assert!(raw.contains("\"learningMode\": \"aggressive\"") && raw.contains("\"provider\": \"gemini\""));
+        assert!(raw.contains("\"theme\": \"stlr\""));
         assert!(!p.with_extension("json.tmp").exists(), "temp file renamed away");
     }
 
@@ -146,6 +161,7 @@ mod tests {
         std::fs::write(&p, r#"{"shortcut":"Alt+Q","llm":{"provider":"groq"},"futureField":1}"#).unwrap();
         let s = Settings::load(&p);
         assert_eq!((s.shortcut.as_str(), s.web_answers, s.llm.provider), ("Alt+Q", true, Provider::Groq));
+        assert_eq!(s.theme, Theme::Acrylic, "settings from before themes existed default to Acrylic");
         let p = tmp("broken.json");
         std::fs::write(&p, "{not json").unwrap();
         assert_eq!(Settings::load(&p), Settings::default());

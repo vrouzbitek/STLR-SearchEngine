@@ -301,12 +301,20 @@ struct Status {
     extension_path: String,
 }
 
+/// `extension/` folder: installed copy (bundle resource) in release, the repo folder in `tauri dev`.
+fn extension_dir(app: &AppHandle) -> PathBuf {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("extension");
+    let installed = app.path().resource_dir().map(|d| d.join("extension")).ok().filter(|d| d.join("manifest.json").exists());
+    let dir = if cfg!(debug_assertions) { Some(repo.clone()).filter(|d| d.exists()).or(installed) } else { installed };
+    let dir = dir.unwrap_or(repo);
+    dir.canonicalize().unwrap_or(dir)
+}
+
 /// Live state for the settings panel (polled ~1s).
 #[tauri::command]
-fn get_status(st: State<'_, AppState>) -> Status {
-    // shortcut: dev-tree path; bundle `extension/` as a resource for installed builds.
-    let ext = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("extension");
-    let ext = ext.canonicalize().unwrap_or(ext);
+fn get_status(app: AppHandle) -> Status {
+    let st = app.state::<AppState>();
+    let ext = extension_dir(&app);
     Status {
         paused: st.brain.lock().unwrap().paused(),
         autostart: autostart::is_enabled(),
@@ -346,6 +354,9 @@ fn update_settings(new: Settings, app: AppHandle) -> Result<Settings, String> {
         if let Err(e) = settings::write_preset(&st.dir.join("weights.json"), new.learning_mode) {
             err = Some(format!("weights.json: {e}"));
         }
+    }
+    if new.theme != old.theme {
+        apply_theme(&app, new.theme);
     }
     if new.web_answers != old.web_answers || new.llm != old.llm {
         answers::configure(new.web_answers, &new.llm);
@@ -408,10 +419,14 @@ async fn launch(path: String, kind: String) -> Result<&'static str, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Win11 compositor-native Acrylic (DWMSBT_TRANSIENTWINDOW), not the legacy SetWindowCompositionAttribute
-/// blur that lags on resize. Applied once; DWM keeps it across hide/show/resize at zero CPU cost.
-/// shortcut: silently no-op before Win11 22H2 (attribute unsupported), add a fallback if that matters.
-fn apply_backdrop(w: &tauri::WebviewWindow) {
+/// Native look of the search bar per theme, switched live (DWM attributes are just window state, ~µs):
+/// - acrylic: Win11 compositor-native Acrylic (DWMSBT_TRANSIENTWINDOW), not the legacy
+///   SetWindowCompositionAttribute blur that lags on resize; rounded corners.
+/// - stlr: no backdrop (CSS paints solid #000), square corners.
+/// - dark / light: no backdrop, rounded corners; light also switches the immersive dark mode off.
+/// shortcut: silently no-op before Win11 22H2 (attributes unsupported), add a fallback if that matters.
+fn apply_dwm(w: &tauri::WebviewWindow, theme: settings::Theme) {
+    use settings::Theme;
     use windows::Win32::Graphics::Dwm::*;
     use windows::Win32::UI::Controls::MARGINS;
     let Ok(h) = w.hwnd() else { return };
@@ -419,13 +434,25 @@ fn apply_backdrop(w: &tauri::WebviewWindow) {
     let set = |attr: DWMWINDOWATTRIBUTE, val: i32| unsafe {
         let _ = DwmSetWindowAttribute(hwnd, attr, &val as *const i32 as _, 4);
     };
-    set(DWMWA_USE_IMMERSIVE_DARK_MODE, 1);
-    set(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND.0);
-    set(DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_TRANSIENTWINDOW.0);
+    set(DWMWA_USE_IMMERSIVE_DARK_MODE, (theme != Theme::Light) as i32);
+    set(DWMWA_WINDOW_CORNER_PREFERENCE, if theme == Theme::Stlr { DWMWCP_DONOTROUND.0 } else { DWMWCP_ROUND.0 });
+    set(DWMWA_SYSTEMBACKDROP_TYPE, if theme == Theme::Acrylic { DWMSBT_TRANSIENTWINDOW.0 } else { DWMSBT_NONE.0 });
     let m = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
     unsafe {
         let _ = DwmExtendFrameIntoClientArea(hwnd, &m);
     }
+}
+
+/// Apply a theme to both windows and tell their webviews (CSS tokens switch via `data-theme`).
+fn apply_theme(app: &AppHandle, theme: settings::Theme) {
+    if let Some(w) = app.get_webview_window("main") {
+        apply_dwm(&w, theme);
+    }
+    if let Some(w) = app.get_webview_window("settings") {
+        let light = theme == settings::Theme::Light;
+        let _ = w.set_theme(Some(if light { tauri::Theme::Light } else { tauri::Theme::Dark }));
+    }
+    let _ = app.emit("theme-changed", theme);
 }
 
 // The windows are created once (hidden) and only shown/hidden afterwards, never destroyed.
@@ -520,9 +547,8 @@ pub fn run() {
                 }
                 apps::prewarm_icons();
             });
-            if let Some(w) = app.get_webview_window("main") {
-                apply_backdrop(&w);
-            }
+            let theme = app.state::<AppState>().settings.lock().unwrap().theme;
+            apply_theme(app.handle(), theme);
             Ok(())
         })
         .on_window_event(|window, event| match (window.label(), event) {

@@ -1,5 +1,79 @@
 @import "tailwindcss";
 
+/* Theme tokens. `data-theme` on <html> is set live from settings (see theme.ts); no reload needed. */
+:root,
+[data-theme="acrylic"] {
+  --bg: rgb(0 0 0 / 0.4); /* translucent: native DWM Acrylic shows through */
+  --panel: #0d0d12;
+  --line: rgb(255 255 255 / 0.15);
+  --fg: #ffffff;
+  --muted: rgb(255 255 255 / 0.6);
+  --faint: rgb(255 255 255 / 0.4);
+  --sel: rgb(255 255 255 / 0.15);
+  --chip: rgb(255 255 255 / 0.15);
+  --input: rgb(0 0 0 / 0.4);
+  --accent: #34d399;
+  --toggle: #0ea5e9;
+  --radius: 8px;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --track: normal;
+  color-scheme: dark;
+}
+
+[data-theme="stlr"] {
+  --bg: #000000;
+  --panel: #000000;
+  --line: rgb(255 255 255 / 0.22);
+  --fg: #f2f2f2;
+  --muted: rgb(255 255 255 / 0.55);
+  --faint: rgb(255 255 255 / 0.35);
+  --sel: rgb(255 255 255 / 0.08);
+  --chip: transparent;
+  --input: #000000;
+  --accent: #ef4444; /* the only colour accent */
+  --toggle: #ef4444;
+  --radius: 0px;
+  --font: "Cascadia Mono", "JetBrains Mono", Consolas, ui-monospace, monospace;
+  --track: 0.03em;
+  color-scheme: dark;
+}
+
+[data-theme="dark"] {
+  --bg: #0f0f11;
+  --panel: #0f0f11;
+  --line: rgb(255 255 255 / 0.08);
+  --fg: #ededee;
+  --muted: #8b8b91;
+  --faint: #5d5d63;
+  --sel: rgb(255 255 255 / 0.06);
+  --chip: rgb(255 255 255 / 0.07);
+  --input: rgb(255 255 255 / 0.04);
+  --accent: #34d399;
+  --toggle: #e5e5e5;
+  --radius: 8px;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --track: normal;
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: #fafafa;
+  --panel: #ffffff;
+  --line: rgb(0 0 0 / 0.12);
+  --fg: #111111;
+  --muted: #6b6b70;
+  --faint: #9c9ca1;
+  --sel: rgb(0 0 0 / 0.06);
+  --chip: rgb(0 0 0 / 0.06);
+  --input: #ffffff;
+  --accent: #16a34a;
+  --toggle: #111111;
+  --radius: 8px;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --track: normal;
+  color-scheme: light;
+}
+
 html,
 body,
 #root {
@@ -7,4 +81,73 @@ body,
   height: 100%;
   background: transparent;
   overflow: hidden;
+}
+
+body {
+  font-family: var(--font);
+  letter-spacing: var(--track);
+  color: var(--fg);
+}
+
+/* Badges: soft pills normally, `[ BRACKETED ]` mono labels in the STLR theme. */
+.chip {
+  flex-shrink: 0;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 16px;
+  background: var(--chip);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chip-action {
+  color: #c4b5fd;
+  background: rgb(167 139 250 / 0.15);
+}
+.chip-warn {
+  color: #fcd34d;
+  background: rgb(251 191 36 / 0.15);
+}
+[data-theme="light"] .chip-action {
+  color: #6d28d9;
+}
+[data-theme="light"] .chip-warn {
+  color: #b45309;
+}
+[data-theme="stlr"] .chip {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  color: var(--muted);
+}
+[data-theme="stlr"] .chip::before {
+  content: "[ ";
+}
+[data-theme="stlr"] .chip::after {
+  content: " ]";
+}
+
+/* STLR: crisp, square geometry everywhere (unlayered, so it beats Tailwind's rounded-* utilities). */
+[data-theme="stlr"] :is(.rounded-xl, .rounded-lg, .rounded-md, .rounded-full) {
+  border-radius: 0;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+[data-theme="stlr"] .dot {
+  border-radius: 0;
+}
+.dot-warn {
+  background: #f59e0b;
+}
+[data-theme="stlr"] .dot-warn {
+  background: var(--accent);
 }

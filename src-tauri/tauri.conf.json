@@ -44,9 +44,21 @@
       "csp": null
     }
   },
+  "mainBinaryName": "stlr-search",
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "publisher": "vrouz",
+    "copyright": "© 2026 vrouz · MIT",
+    "shortDescription": "Self-learning, keyboard-first Windows launcher",
+    "resources": {
+      "../extension/": "extension/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

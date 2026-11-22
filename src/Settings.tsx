@@ -1,10 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { type Theme, useTheme } from "./theme";
 
 type LearningMode = "calm" | "balanced" | "aggressive";
 type Provider = "none" | "groq" | "gemini" | "openai";
 type Settings = {
+  theme: Theme;
   shortcut: string;
   autostart: boolean;
   learningMode: LearningMode;
@@ -14,6 +16,12 @@ type Settings = {
 type Status = { paused: boolean; autostart: boolean; browsers: { browser: string; tabs: number }[]; extensionPath: string };
 
 const SHORTCUTS = ["Alt+Space", "Ctrl+Space", "Alt+Q", "Ctrl+Alt+Space"];
+const THEMES: { id: Theme; label: string; hint: string }[] = [
+  { id: "acrylic", label: "Acrylic", hint: "Native Windows 11 translucency" },
+  { id: "stlr", label: "STLR", hint: "Pure black, monospace, [ BRACKETED ] labels" },
+  { id: "dark", label: "Dark", hint: "Matte, minimal, no transparency" },
+  { id: "light", label: "Light", hint: "Clean white, dark text" },
+];
 const MODES: { id: LearningMode; label: string; hint: string }[] = [
   { id: "calm", label: "Calm", hint: "Needs several picks before reordering" },
   { id: "balanced", label: "Balanced", hint: "One pick below #1 moves it up" },
@@ -28,8 +36,8 @@ const PROVIDERS: { id: Provider; label: string; model: string }[] = [
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="rounded-xl border border-white/10 bg-white/[0.03] p-5">
-      <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider text-white/45">{title}</h2>
+    <section className="rounded-xl border border-[var(--line)] bg-[var(--sel)] p-5">
+      <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider text-[var(--faint)]">{title}</h2>
       <div className="space-y-4">{children}</div>
     </section>
   );
@@ -39,8 +47,8 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
   return (
     <div className="flex items-center justify-between gap-6">
       <div>
-        <div className="text-sm text-white/90">{label}</div>
-        {hint && <div className="mt-0.5 text-xs text-white/45">{hint}</div>}
+        <div className="text-sm text-[var(--fg)]">{label}</div>
+        {hint && <div className="mt-0.5 text-xs text-[var(--faint)]">{hint}</div>}
       </div>
       <div className="shrink-0">{children}</div>
     </div>
@@ -54,17 +62,18 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
       aria-checked={on}
       aria-label={label}
       onClick={() => onChange(!on)}
-      className={`relative h-6 w-11 rounded-full transition-colors ${on ? "bg-sky-500" : "bg-white/15"}`}
+      className={`relative h-6 w-11 rounded-full transition-colors ${on ? "bg-[var(--toggle)]" : "bg-[var(--chip)]"}`}
     >
-      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${on ? "left-[22px]" : "left-0.5"}`} />
+      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${on ? "left-[22px]" : "left-0.5"}`} />
     </button>
   );
 }
 
-const input = "rounded-md border border-white/10 bg-black/40 px-3 py-1.5 text-sm text-white outline-none focus:border-sky-400/60";
-const button = "rounded-md border border-white/10 bg-white/[0.06] px-3 py-1.5 text-sm text-white/85 hover:bg-white/10";
+const input = "rounded-md border border-[var(--line)] bg-[var(--input)] px-3 py-1.5 text-sm text-[var(--fg)] outline-none focus:border-sky-400/60";
+const button = "rounded-md border border-[var(--line)] bg-[var(--chip)] px-3 py-1.5 text-sm text-[var(--fg)] hover:bg-[var(--sel)]";
 
 export default function SettingsPanel() {
+  useTheme();
   const [s, setS] = useState<Settings | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
@@ -108,25 +117,40 @@ export default function SettingsPanel() {
       });
   };
 
-  if (!s || !status) return <div className="h-full bg-[#0d0d12]" />;
+  if (!s || !status) return <div className="h-full bg-[var(--panel)]" />;
 
   const llmOn = s.llm.provider !== "none";
   const provider = PROVIDERS.find((p) => p.id === s.llm.provider)!;
   const saveLlm = () => save({ ...s, llm: { ...s.llm, ...draft } });
 
   return (
-    <div className="h-full overflow-y-auto bg-[#0d0d12] text-white">
+    <div className="h-full overflow-y-auto bg-[var(--panel)] text-[var(--fg)]">
       <div className="mx-auto max-w-2xl space-y-5 p-6">
         <header className="flex items-baseline justify-between">
           <h1 className="text-lg font-semibold">STLR Search</h1>
-          {msg && <span className={`text-xs ${msg.error ? "text-rose-300" : "text-emerald-300"}`}>{msg.text}</span>}
+          {msg && <span className={`text-xs ${msg.error ? "text-rose-400" : "text-[var(--accent)]"}`}>{msg.text}</span>}
         </header>
 
         <Section title="General">
+          <div>
+            <div className="mb-2 text-sm text-[var(--fg)]">Theme</div>
+            <div className="grid grid-cols-4 gap-1 rounded-lg bg-[var(--input)] p-1">
+              {THEMES.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => save({ ...s, theme: t.id })}
+                  className={`rounded-md py-1.5 text-sm ${s.theme === t.id ? "bg-[var(--toggle)] text-[var(--panel)]" : "text-[var(--muted)] hover:text-[var(--fg)]"}`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <div className="mt-1.5 text-xs text-[var(--faint)]">{THEMES.find((t) => t.id === s.theme)!.hint}</div>
+          </div>
           <Row label="Global shortcut" hint="Opens the search bar from anywhere">
             <select className={input} value={s.shortcut} onChange={(e) => save({ ...s, shortcut: e.target.value })}>
               {SHORTCUTS.map((k) => (
-                <option key={k} value={k} className="bg-neutral-900">
+                <option key={k} value={k} className="bg-[var(--panel)]">
                   {k}
                 </option>
               ))}
@@ -146,19 +170,19 @@ export default function SettingsPanel() {
             />
           </Row>
           <div>
-            <div className="mb-2 text-sm text-white/90">Learning speed</div>
-            <div className="grid grid-cols-3 gap-1 rounded-lg bg-black/40 p-1">
+            <div className="mb-2 text-sm text-[var(--fg)]">Learning speed</div>
+            <div className="grid grid-cols-3 gap-1 rounded-lg bg-[var(--input)] p-1">
               {MODES.map((m) => (
                 <button
                   key={m.id}
                   onClick={() => save({ ...s, learningMode: m.id })}
-                  className={`rounded-md py-1.5 text-sm ${s.learningMode === m.id ? "bg-sky-500/80 text-white" : "text-white/60 hover:text-white"}`}
+                  className={`rounded-md py-1.5 text-sm ${s.learningMode === m.id ? "bg-[var(--toggle)] text-[var(--panel)]" : "text-[var(--muted)] hover:text-[var(--fg)]"}`}
                 >
                   {m.label}
                 </button>
               ))}
             </div>
-            <div className="mt-1.5 text-xs text-white/45">{MODES.find((m) => m.id === s.learningMode)!.hint}</div>
+            <div className="mt-1.5 text-xs text-[var(--faint)]">{MODES.find((m) => m.id === s.learningMode)!.hint}</div>
           </div>
           <div className="flex gap-2">
             <button
@@ -172,7 +196,7 @@ export default function SettingsPanel() {
               Reseed now
             </button>
             <button
-              className={`${button} ${confirmReset ? "border-rose-400/50 text-rose-300" : ""}`}
+              className={`${button} ${confirmReset ? "border-rose-400/50 text-rose-400" : ""}`}
               onBlur={() => setConfirmReset(false)}
               onClick={() => {
                 if (!confirmReset) return setConfirmReset(true);
@@ -197,7 +221,7 @@ export default function SettingsPanel() {
                 onChange={(e) => save({ ...s, llm: { ...s.llm, ...draft, provider: e.target.value as Provider } })}
               >
                 {PROVIDERS.map((p) => (
-                  <option key={p.id} value={p.id} className="bg-neutral-900">
+                  <option key={p.id} value={p.id} className="bg-[var(--panel)]">
                     {p.label}
                   </option>
                 ))}
@@ -206,7 +230,7 @@ export default function SettingsPanel() {
             {llmOn && (
               <div className="mt-4 space-y-3">
                 <label className="block">
-                  <span className="mb-1 block text-xs text-white/55">API key (stored only in your local settings.json)</span>
+                  <span className="mb-1 block text-xs text-[var(--muted)]">API key (stored only in your local settings.json)</span>
                   <input
                     type="password"
                     autoComplete="off"
@@ -219,7 +243,7 @@ export default function SettingsPanel() {
                   />
                 </label>
                 <label className="block">
-                  <span className="mb-1 block text-xs text-white/55">Model</span>
+                  <span className="mb-1 block text-xs text-[var(--muted)]">Model</span>
                   <input
                     className={`${input} w-full`}
                     value={draft.model}
@@ -230,7 +254,7 @@ export default function SettingsPanel() {
                 </label>
                 {s.llm.provider === "openai" && (
                   <label className="block">
-                    <span className="mb-1 block text-xs text-white/55">Base URL</span>
+                    <span className="mb-1 block text-xs text-[var(--muted)]">Base URL</span>
                     <input
                       className={`${input} w-full`}
                       value={draft.baseUrl}
@@ -240,7 +264,7 @@ export default function SettingsPanel() {
                     />
                   </label>
                 )}
-                <p className="text-xs text-white/45">
+                <p className="text-xs text-[var(--faint)]">
                   Only real questions (a question word, “?”, or 3+ words) are sent to the LLM. Answers are 1–2 sentences in
                   the language of the question.
                 </p>
@@ -251,18 +275,18 @@ export default function SettingsPanel() {
 
         <Section title="Browser Tabs Extension">
           <div className="flex items-center gap-2 text-sm">
-            <span className={`h-2 w-2 rounded-full ${status.browsers.length ? "bg-emerald-400" : "bg-white/25"}`} />
+            <span className={`h-2 w-2 rounded-full ${status.browsers.length ? "bg-[var(--accent)]" : "bg-[var(--faint)]"}`} />
             {status.browsers.length
               ? `Connected: ${status.browsers.map((b) => `${b.browser} (${b.tabs} tabs)`).join(", ")}`
               : "Not connected"}
           </div>
-          <p className="text-xs leading-5 text-white/55">
-            Open <code className="text-white/80">edge://extensions</code> (or chrome:// / brave://), turn on Developer mode.
+          <p className="text-xs leading-5 text-[var(--muted)]">
+            Open <code className="text-[var(--fg)]">edge://extensions</code> (or chrome:// / brave://), turn on Developer mode.
             <br />
             Click “Load unpacked” and pick the folder below. It connects within a few seconds.
           </p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 truncate rounded-md bg-black/40 px-3 py-1.5 text-xs text-white/70">{status.extensionPath}</code>
+            <code className="flex-1 truncate rounded-md bg-[var(--input)] px-3 py-1.5 text-xs text-[var(--muted)]">{status.extensionPath}</code>
             <button
               className={button}
               onClick={() => invoke("copy_text", { text: status.extensionPath }).then(() => flash("Path copied"))}
