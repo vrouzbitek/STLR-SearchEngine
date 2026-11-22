@@ -115,7 +115,7 @@ mod tests {
     fn live_wizard() {
         crate::apps::index();
         crate::apps::prewarm_targets();
-        crate::bookmarks::load();
+        crate::bookmarks::load(std::path::Path::new("no-links.json"));
         let c = candidates();
         for i in c.apps.iter().chain(&c.sites) {
             println!("{:<9} {:<8} {} {}", i.source, i.kind, i.name, i.detail);

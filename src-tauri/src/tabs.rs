@@ -168,6 +168,27 @@ pub fn search(q: &str, max: usize) -> Vec<Hit> {
     v
 }
 
+/// Switch to an open tab already showing `url` (any connected browser). False if there is none.
+pub fn focus_url(url: &str) -> bool {
+    let found = CONNS.read().unwrap().iter().find_map(|(id, c)| {
+        c.tabs.iter().find(|t| same_page(&t.url, url)).map(|t| format!("tab:{id}:{}:{}", t.window_id, t.tab_id))
+    });
+    found.is_some_and(|p| focus(&p))
+}
+
+/// Same host and path, ignoring query, fragment, trailing slash and "www.". Sites that rewrite the path
+/// (Drive: /drive/folders/ID -> /drive/u/0/folders/ID) still match when the tab ends with the same long id.
+fn same_page(tab: &str, target: &str) -> bool {
+    let norm = |u: &str| {
+        let u = u.split(['?', '#']).next().unwrap_or(u).trim_end_matches('/').to_lowercase();
+        u.split("://").nth(1).unwrap_or(&u).trim_start_matches("www.").to_string()
+    };
+    let (a, b) = (norm(tab), norm(target));
+    let host = |s: &str| s.split('/').next().unwrap_or("").to_string();
+    let id = b.rsplit('/').next().unwrap_or("");
+    a == b || (host(&a) == host(&b) && id.len() >= 16 && a.ends_with(&format!("/{id}")))
+}
+
 /// Ask the owning browser to activate the tab and focus its window. False if that browser disconnected.
 pub fn focus(path: &str) -> bool {
     let parts: Vec<&str> = path.strip_prefix("tab:").unwrap_or("").split(':').collect();
@@ -217,6 +238,18 @@ mod tests {
         assert!(serde_json::from_str::<Incoming>(r#"{"type":"evil"}"#).is_err());
         assert!(origin_allowed(Some("chrome-extension://abcdef")));
         assert!(!origin_allowed(Some("https://evil.example")) && !origin_allowed(None));
+    }
+
+    #[test]
+    fn same_page_matching() {
+        let drive = "https://drive.google.com/drive/folders/1RnK7weS7sLWjQqnu39ZVcx0JqpouPtfS?hl=pl";
+        assert!(same_page("https://drive.google.com/drive/folders/1RnK7weS7sLWjQqnu39ZVcx0JqpouPtfS", drive));
+        assert!(same_page("https://drive.google.com/drive/u/0/folders/1RnK7weS7sLWjQqnu39ZVcx0JqpouPtfS#x", drive));
+        assert!(!same_page("https://drive.google.com/drive/folders/OTHERFOLDERID12345678", drive));
+        assert!(!same_page("https://evil.example/1RnK7weS7sLWjQqnu39ZVcx0JqpouPtfS", drive));
+        assert!(same_page("https://www.github.com/", "https://github.com"));
+        // short last segments must match exactly (no "/" == "/a/b/" style accidents)
+        assert!(!same_page("https://github.com/x/issues", "https://github.com/y/issues"));
     }
 
     #[test]

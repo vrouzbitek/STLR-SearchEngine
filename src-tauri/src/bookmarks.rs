@@ -1,9 +1,10 @@
 //! Browser bookmarks (Chromium `Bookmarks` JSON) for Edge, Chrome and Brave, all profiles. Loaded once at
 //! startup in the background, searched in RAM.
+//! Plus the user's own links (`links.json` in the app data dir), which rank above everything else they match.
 //! shortcut: no live reload; bookmarks added after startup appear on next launch. Add a file watcher if needed.
 use crate::{score, Hit};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 struct Bookmark {
@@ -13,6 +14,8 @@ struct Bookmark {
     browser: &'static str,
     /// Chromium `date_last_used` (falls back to `date_added`), µs since 1601. Used to rank "Detected Sites".
     last_used: i64,
+    /// From links.json: the user's explicit pick, ranked one full step above an equal bookmark/app match.
+    link: bool,
 }
 
 static BOOKMARKS: RwLock<Vec<Bookmark>> = RwLock::new(Vec::new());
@@ -23,9 +26,12 @@ const BROWSERS: [(&str, &str); 3] = [
     ("Brave", r"BraveSoftware\Brave-Browser\User Data"),
 ];
 
-pub fn load() -> usize {
-    let Ok(local) = std::env::var("LOCALAPPDATA") else { return 0 };
+pub fn load(links: &Path) -> usize {
     let mut out = Vec::new();
+    if let Ok(json) = std::fs::read_to_string(links) {
+        parse_links(&json, &mut out);
+    }
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
     for (browser, sub) in BROWSERS {
         let Ok(profiles) = std::fs::read_dir(PathBuf::from(&local).join(sub)) else { continue }; // not installed
         for p in profiles.flatten() {
@@ -34,11 +40,32 @@ pub fn load() -> usize {
             }
         }
     }
-    out.sort_by(|a, b| a.url.cmp(&b.url));
+    out.sort_by(|a, b| a.url.cmp(&b.url).then(b.link.cmp(&a.link))); // a link wins over the same URL bookmarked
     out.dedup_by(|a, b| a.url == b.url); // same bookmark synced across browsers/profiles
     let n = out.len();
     *BOOKMARKS.write().unwrap() = out;
     n
+}
+
+/// `[{"name": "STELLAR ARCHIVE", "url": "https://...", "browser": "Edge"}]`; browser is optional
+/// ("Edge" opens in Edge even if it isn't the default browser, anything else uses the default one).
+fn parse_links(json: &str, out: &mut Vec<Bookmark>) {
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else {
+        eprintln!("links.json must be an array of {{name, url}}");
+        return;
+    };
+    for i in &items {
+        let (Some(name), Some(url)) = (i["name"].as_str(), i["url"].as_str()) else { continue };
+        if url.starts_with("http://") || url.starts_with("https://") {
+            let browser = if i["browser"].as_str().is_some_and(|b| b.eq_ignore_ascii_case("edge")) { "Edge" } else { "Link" };
+            out.push(Bookmark { lower: name.to_lowercase(), title: name.into(), url: url.into(), browser, last_used: 0, link: true });
+        }
+    }
+}
+
+/// Browser a bookmarked/linked URL belongs to ("Edge", "Chrome", "Brave", "Link").
+pub fn browser_of(url: &str) -> Option<&'static str> {
+    BOOKMARKS.read().unwrap().iter().find(|b| b.url == url).map(|b| b.browser)
 }
 
 fn parse(json: &str, browser: &'static str, out: &mut Vec<Bookmark>) {
@@ -58,7 +85,7 @@ fn walk(node: &Value, browser: &'static str, out: &mut Vec<Bookmark>) {
                 let title = node["name"].as_str().filter(|s| !s.trim().is_empty()).unwrap_or(url).to_string();
                 let date = |k: &str| node[k].as_str().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
                 let last_used = Some(date("date_last_used")).filter(|d| *d > 0).unwrap_or_else(|| date("date_added"));
-                out.push(Bookmark { lower: title.to_lowercase(), title, url: url.to_string(), browser, last_used });
+                out.push(Bookmark { lower: title.to_lowercase(), title, url: url.to_string(), browser, last_used, link: false });
             }
         }
         Some("folder") => {
@@ -92,14 +119,14 @@ pub fn search(q: &str, max: usize) -> Vec<Hit> {
         .iter()
         .filter_map(|b| score(&b.lower, q).or_else(|| b.url.to_lowercase().contains(q).then_some(3)).map(|s| (s, b)))
         .collect();
-    v.sort_by_key(|(s, b)| (*s, b.title.len()));
+    v.sort_by_key(|(s, b)| (*s, !b.link, b.title.len()));
     v.into_iter()
         .take(max)
         .map(|(s, b)| Hit {
             name: b.title.clone(),
             path: b.url.clone(),
             kind: "bookmark",
-            score: s as f32 + 0.2,
+            score: s as f32 + if b.link { -0.8 } else { 0.2 },
             detail: Some(format!("{} · {}", b.browser, host(&b.url))),
             ..Default::default()
         })
@@ -109,6 +136,9 @@ pub fn search(q: &str, max: usize) -> Vec<Hit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tests that swap the global BOOKMARKS list must not run at the same time.
+    static GLOBAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     const SAMPLE: &str = r#"{"roots":{
         "bookmark_bar":{"type":"folder","name":"Bar","children":[
@@ -135,6 +165,7 @@ mod tests {
 
     #[test]
     fn searches_title_and_url() {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = Vec::new();
         parse(SAMPLE, "Chrome", &mut out);
         *BOOKMARKS.write().unwrap() = out;
@@ -148,11 +179,30 @@ mod tests {
         assert_eq!(r, ["GitHub", "Playboi Carti – Spotify"]);
     }
 
+    #[test]
+    fn user_links_rank_first_and_keep_their_browser() {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = Vec::new();
+        parse_links(r#"[{"name":"STELLAR ARCHIVE","url":"https://drive.google.com/drive/folders/X","browser":"edge"},
+                        {"name":"Plain","url":"https://example.com/"},{"name":"bad","url":"file:///C:/x"},{"url":"https://no-name"}]"#, &mut out);
+        parse(r#"{"roots":{"b":{"type":"folder","children":[{"type":"url","name":"Steam","url":"https://store.steampowered.com/"}]}}}"#, "Chrome", &mut out);
+        parse_links("not json", &mut out); // logged, no panic
+        assert_eq!(out.iter().filter(|b| b.link).count(), 2);
+        *BOOKMARKS.write().unwrap() = out;
+        // "st": the link (prefix) outranks a bookmark and an app with the same prefix match (score 1).
+        let hits = search("st", 5);
+        assert_eq!(hits[0].name, "STELLAR ARCHIVE");
+        assert!(hits[0].score < 1.0 && hits[1].score > 1.0);
+        assert_eq!(hits[0].detail.as_deref(), Some("Edge · drive.google.com"));
+        assert_eq!(browser_of("https://drive.google.com/drive/folders/X"), Some("Edge"));
+        assert_eq!(browser_of("https://example.com/"), Some("Link"));
+    }
+
     // cargo test --lib live_bookmarks -- --ignored --nocapture
     #[test]
     #[ignore]
     fn live_bookmarks() {
         let t = std::time::Instant::now();
-        println!("loaded {} bookmarks in {:?}", load(), t.elapsed());
+        println!("loaded {} bookmarks in {:?}", load(Path::new("no-links.json")), t.elapsed());
     }
 }

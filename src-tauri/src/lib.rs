@@ -453,7 +453,15 @@ async fn instant_answer(query: String) -> Option<answers::Answer> {
 async fn launch(path: String, kind: String) -> Result<&'static str, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if routes::is_web(&kind) {
-            return tauri_plugin_opener::open_url(&path, None::<&str>).map(|_| "opened").map_err(|e| e.to_string());
+            // Switch, don't duplicate: a bookmarked/typed page that is already open gets its tab focused.
+            if matches!(kind.as_str(), "bookmark" | "url") && tabs::focus_url(&path) {
+                return Ok("switched");
+            }
+            let url = match bookmarks::browser_of(&path) {
+                Some("Edge") => format!("microsoft-edge:{path}"), // Edge bookmarks open in Edge, whatever the default
+                _ => path,
+            };
+            return tauri_plugin_opener::open_url(&url, None::<&str>).map(|_| "opened").map_err(|e| e.to_string());
         }
         if kind == "tab" {
             return if tabs::focus(&path) { Ok("focused") } else { Err("browser disconnected".into()) };
@@ -633,9 +641,10 @@ pub fn run() {
             });
             let handle = app.handle().clone();
             let packs_override = dir.join("actions.json");
+            let links = dir.join("links.json");
             std::thread::spawn(move || {
                 apps::index();
-                bookmarks::load();
+                bookmarks::load(&links);
                 apps::prewarm_targets();
                 subactions::activate(&packs_override);
                 // First run: the wizard decides what gets seeded (needs the index + .lnk targets above).

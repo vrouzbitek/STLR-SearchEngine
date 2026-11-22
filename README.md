@@ -112,6 +112,12 @@ All user data lives in `%APPDATA%\com.stlr.searchengine\` and is never written t
 
 The *Calm / Balanced / Aggressive* switch in settings rewrites the `pick_*`, `skip_penalty` and `pin_threshold` keys and keeps the rest.
 
+**`links.json`**: your own named links. They rank above any app or bookmark with an equally good match (type `st` and `STELLAR ARCHIVE` is first). Like any bookmark, picking one switches to its tab if it is already open (needs the extension), otherwise opens it; `"browser": "Edge"` opens it in Edge even when Edge isn't the default browser:
+
+```json
+[{ "name": "STELLAR ARCHIVE", "url": "https://drive.google.com/drive/folders/...", "browser": "Edge" }]
+```
+
 **`actions.json`**: replaces the bundled [community action packs](actions.json). A pack matches an indexed app by exe file name or Start Menu name; an action runs the app's exe with `args` or opens a `uri`:
 
 ```json
