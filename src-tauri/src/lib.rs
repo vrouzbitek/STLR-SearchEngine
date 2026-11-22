@@ -16,6 +16,7 @@ mod subactions;
 mod switcher;
 mod tabs;
 mod tray;
+mod updater;
 mod winkey;
 mod wizard;
 
@@ -602,6 +603,8 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -635,6 +638,7 @@ pub fn run() {
                 tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.build()?;
             }
             tray::build(app.handle())?;
+            updater::start(app.handle());
             tabs::start();
             // Recent projects: rescan periodically so newly opened files show up under their app.
             std::thread::spawn(|| loop {

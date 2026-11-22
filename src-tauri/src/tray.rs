@@ -8,17 +8,21 @@ pub struct Tray {
     open: MenuItem<Wry>,
     pause: CheckMenuItem<Wry>,
     autostart: CheckMenuItem<Wry>,
+    update: MenuItem<Wry>,
 }
+
+const CHECK_UPDATES: &str = "Check for updates";
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Search", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let pause = CheckMenuItem::with_id(app, "pause", "Pause Brain", true, false, None::<&str>)?;
     let autostart = CheckMenuItem::with_id(app, "autostart", "Start with Windows", true, false, None::<&str>)?;
+    let update = MenuItem::with_id(app, "update", CHECK_UPDATES, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open, &settings, &sep1, &pause, &autostart, &sep2, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &settings, &sep1, &pause, &autostart, &update, &sep2, &quit])?;
 
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().cloned().expect("bundle icon"))
@@ -36,6 +40,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                     eprintln!("autostart: {err}");
                 }
             }
+            "update" => {
+                tauri::async_runtime::spawn(crate::updater::install_or_check(app.clone()));
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -46,9 +53,16 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         })
         .build(app)?;
 
-    app.manage(Tray { open, pause, autostart });
+    app.manage(Tray { open, pause, autostart, update });
     sync(app);
     Ok(())
+}
+
+/// `Some(version)`: an update is waiting, the item installs it. `None`: back to a manual check.
+pub fn set_update(app: &AppHandle, version: Option<&str>) {
+    if let Some(t) = app.try_state::<Tray>() {
+        let _ = t.update.set_text(version.map_or(CHECK_UPDATES.into(), |v| format!("Install update {v}")));
+    }
 }
 
 /// Reflect current state in the menu (checkmarks toggle themselves on click; this makes them truthful).

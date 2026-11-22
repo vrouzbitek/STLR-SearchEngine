@@ -31,6 +31,8 @@ windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_Window
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 ureq = { version = "3.5.2", features = ["json"] }
 tungstenite = "0.30.0"
+tauri-plugin-updater = "2.14.1"
+tauri-plugin-notification = "2.8.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
