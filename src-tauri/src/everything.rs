@@ -144,7 +144,7 @@ fn rank(items: Vec<(String, String, bool)>, query: &str, max: usize) -> Vec<Hit>
     v.sort_by_key(|(s, dir, _, path)| (*s, !*dir, path.len()));
     v.into_iter()
         .take(max)
-        .map(|(s, dir, name, path)| Hit { name, path, kind: if dir { "folder" } else { "file" }, score: s as f32, running: false })
+        .map(|(s, dir, name, path)| Hit { name, path, kind: if dir { "folder" } else { "file" }, score: s as f32, ..Default::default() })
         .collect()
 }
 

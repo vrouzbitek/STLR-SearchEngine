@@ -29,11 +29,66 @@ pub fn icon(path: &str, kind: &str) -> Option<String> {
     }
     let png = unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); // per thread; repeat calls are harmless
-        if per_path { shell_item_png(path).or_else(|| type_icon_png(path, false, false)) } else { type_icon_png(path, kind == "folder", true) }
+        if per_path {
+            msix_logo_png(path).or_else(|| shell_item_png(path)).or_else(|| type_icon_png(path, false, false))
+        } else {
+            type_icon_png(path, kind == "folder", true)
+        }
     };
     let data = png.map(|b| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(b)));
     CACHE.lock().unwrap().insert(key, data.clone());
     data
+}
+
+/// Shortcuts to packaged (MSIX/Store) apps: the shell renders some of them as a gray plated tile
+/// (e.g. Claude), so read the package's own Square44x44Logo PNG instead.
+fn msix_logo_png(path: &str) -> Option<Vec<u8>> {
+    if !path.to_ascii_lowercase().ends_with(".lnk") {
+        return None;
+    }
+    let app_id = crate::switcher::lnk_app_id(path)?;
+    let dir = package_dir(app_id.split('!').next()?)?;
+    let manifest = std::fs::read_to_string(dir.join("AppxManifest.xml")).ok()?;
+    let rel = manifest_attr(&manifest, "Square44x44Logo")?;
+    let base = dir.join(rel.replace('/', "\\"));
+    let stem = base.with_extension("");
+    let s = stem.to_string_lossy();
+    [base.clone(), format!("{s}.scale-200.png").into(), format!("{s}.scale-100.png").into(), format!("{s}.targetsize-48.png").into()]
+        .iter()
+        .find_map(|p| std::fs::read(p).ok())
+        .filter(|b| b.starts_with(b"\x89PNG"))
+}
+
+/// First `name="value"` attribute in the manifest (good enough for the logo path; no XML dependency).
+fn manifest_attr(xml: &str, name: &str) -> Option<String> {
+    let start = xml.find(&format!("{name}=\""))? + name.len() + 2;
+    Some(xml[start..].split('"').next()?.to_string())
+}
+
+/// Install directory of the newest installed package of a family (works for WindowsApps on any drive).
+fn package_dir(family: &str) -> Option<std::path::PathBuf> {
+    use windows::core::PWSTR;
+    use windows::Win32::Storage::Packaging::Appx::{GetPackagePathByFullName, GetPackagesByPackageFamily};
+    let fam: Vec<u16> = family.encode_utf16().chain([0]).collect();
+    unsafe {
+        let (mut count, mut len) = (0u32, 0u32);
+        let _ = GetPackagesByPackageFamily(PCWSTR(fam.as_ptr()), &mut count, None, &mut len, None);
+        if count == 0 || len == 0 {
+            return None;
+        }
+        let mut names = vec![PWSTR::null(); count as usize];
+        let mut buf = vec![0u16; len as usize];
+        GetPackagesByPackageFamily(PCWSTR(fam.as_ptr()), &mut count, Some(names.as_mut_ptr()), &mut len, Some(PWSTR(buf.as_mut_ptr())))
+            .ok()
+            .ok()?;
+        let full = PCWSTR(names.last()?.0);
+        let mut plen = 0u32;
+        let _ = GetPackagePathByFullName(full, &mut plen, None);
+        let mut pbuf = vec![0u16; plen as usize];
+        GetPackagePathByFullName(full, &mut plen, Some(PWSTR(pbuf.as_mut_ptr()))).ok().ok()?;
+        let end = pbuf.iter().position(|&c| c == 0).unwrap_or(pbuf.len());
+        Some(String::from_utf16_lossy(&pbuf[..end]).into())
+    }
 }
 
 /// Real icon of this exact file (resolves .lnk targets, Store-app shortcuts, embedded exe icons).
@@ -156,13 +211,15 @@ mod tests {
     fn dump_icons() {
         let dir = std::path::PathBuf::from(std::env::var("STLR_ICON_DUMP").expect("STLR_ICON_DUMP"));
         crate::apps::index();
-        for q in ["spotify", "reaper", "blender", "discord", "visual studio code", "steam"] {
+        for q in ["spotify", "claude", "discord"] {
             let Some(hit) = crate::apps::search(q, 1).pop() else { continue };
             unsafe {
                 let _ = super::CoInitializeEx(None, super::COINIT_APARTMENTTHREADED);
                 let old = super::type_icon_png(&hit.path, false, false);
-                let new = super::shell_item_png(&hit.path);
+                let new = super::msix_logo_png(&hit.path).or_else(|| super::shell_item_png(&hit.path));
                 println!("{q}: {} | old {:?} B | new {:?} B", hit.path, old.as_ref().map(|v| v.len()), new.as_ref().map(|v| v.len()));
+                let id = crate::switcher::lnk_app_id(&hit.path);
+                println!("  app_id {id:?} dir {:?}", id.as_deref().and_then(|i| super::package_dir(i.split('!').next()?)));
                 if let Some(b) = old { std::fs::write(dir.join(format!("{q}-old.png")), b).unwrap(); }
                 if let Some(b) = new { std::fs::write(dir.join(format!("{q}-new.png")), b).unwrap(); }
             }

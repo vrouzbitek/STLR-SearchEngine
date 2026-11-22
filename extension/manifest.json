@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "STLR Tabs Bridge",
+  "version": "0.1.0",
+  "description": "Streams your open tabs to the local STLR launcher (ws://127.0.0.1:49152, localhost only) and focuses a tab when you pick it there.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "alarms"],
+  "background": { "service_worker": "background.js" }
+}

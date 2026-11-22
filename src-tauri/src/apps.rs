@@ -82,6 +82,6 @@ pub fn search(query: &str, max: usize) -> Vec<Hit> {
     hits.sort_by_key(|(s, a)| (*s, a.name.len()));
     hits.into_iter()
         .take(max)
-        .map(|(s, a)| Hit { name: a.name.clone(), path: a.path.clone(), kind: "app", score: s as f32, running: false })
+        .map(|(s, a)| Hit { name: a.name.clone(), path: a.path.clone(), kind: "app", score: s as f32, ..Default::default() })
         .collect()
 }

@@ -8,7 +8,8 @@ pub const URL_SCORE: f32 = -50.0;
 /// Web searches sit below good local matches (0..2) but above weak ones (3..5) until the brain promotes them.
 const ROUTE_BASE: f32 = 3.0;
 
-pub const WEB_KINDS: [&str; 5] = ["spotify", "youtube", "google", "instagram", "url"];
+/// Hits whose path is a URI opened with the default handler (learnable, not a file path).
+pub const WEB_KINDS: [&str; 6] = ["spotify", "youtube", "google", "instagram", "url", "bookmark"];
 
 pub fn is_web(kind: &str) -> bool {
     WEB_KINDS.contains(&kind)
@@ -53,7 +54,7 @@ pub fn as_url(q: &str) -> Option<String> {
 }
 
 fn hit(name: &str, path: String, kind: &'static str, score: f32) -> Hit {
-    Hit { name: name.to_string(), path, kind, score, running: false }
+    Hit { name: name.to_string(), path, kind, score, ..Default::default() }
 }
 
 /// Calculator result as a hit (name = result text, copied on Enter).

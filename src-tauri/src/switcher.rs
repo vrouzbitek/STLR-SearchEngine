@@ -144,6 +144,35 @@ pub fn focus_existing(path: &str) -> bool {
     true
 }
 
+/// AppUserModelID ("Claude_pzs8sxrjxfjjc!Claude") of a shortcut to a packaged (MSIX/Store) app. Two forms:
+/// a PIDL into shell:AppsFolder (Store-created), or `explorer.exe shell:AppsFolder\<AUMID>` (hand-made).
+pub fn lnk_app_id(path: &str) -> Option<String> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{SHGetNameFromIDList, SIGDN_DESKTOPABSOLUTEPARSING};
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
+        link.cast::<IPersistFile>().ok()?.Load(PCWSTR(wide.as_ptr()), STGM_READ).ok()?;
+        let mut args = [0u16; 1024];
+        if link.GetArguments(&mut args).is_ok() {
+            let end = args.iter().position(|&c| c == 0).unwrap_or(args.len());
+            let a = String::from_utf16_lossy(&args[..end]);
+            if let Some(id) = a.trim().trim_matches('"').strip_prefix("shell:AppsFolder\\").or_else(|| a.trim().strip_prefix("shell:appsFolder\\")) {
+                return id.contains('!').then(|| id.to_string());
+            }
+        }
+        let pidl = link.GetIDList().ok()?;
+        let name = SHGetNameFromIDList(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
+        CoTaskMemFree(Some(pidl as *const _));
+        let name = name.ok()?;
+        let s = name.to_string().ok();
+        CoTaskMemFree(Some(name.0 as *const _));
+        let id = s?.rsplit('\\').next()?.to_string();
+        id.contains('!').then_some(id)
+    }
+}
+
 unsafe fn lnk_target_raw(path: &str) -> Option<String> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);

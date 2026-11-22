@@ -119,9 +119,10 @@ pub struct Brain {
     paused: bool,
 }
 
-/// Calculator results are ephemeral (id = the result) and never learned or penalized.
+/// Never learned or penalized: calculator results and open tabs are ephemeral ids, and system commands
+/// must never be promoted into zero-query (one stray Enter would shut the PC down).
 fn learnable(t: &Target) -> bool {
-    t.kind != "calc"
+    !matches!(t.kind.as_str(), "calc" | "tab" | "system")
 }
 
 pub fn norm(q: &str) -> String {

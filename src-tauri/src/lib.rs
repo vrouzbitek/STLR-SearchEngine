@@ -1,13 +1,16 @@
 mod answers;
 mod apps;
+mod bookmarks;
 mod brain;
 mod calc;
 mod clipboard;
+mod commands;
 mod everything;
 mod icons;
 mod routes;
 mod seeder;
 mod switcher;
+mod tabs;
 
 use brain::{Brain, Commit, Stats, Target, Weights};
 use serde::Serialize;
@@ -27,13 +30,15 @@ pub struct AppState {
     ctx: Mutex<String>, // foreground exe captured on Alt+Space, before our window shows
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, Default)]
 pub struct Hit {
     pub name: String,
     pub path: String,
-    pub kind: &'static str, // "app" | "folder" | "file" | "calc" | routes::WEB_KINDS
+    pub kind: &'static str, // "app" | "folder" | "file" | "calc" | "system" | "tab" | routes::WEB_KINDS
     pub score: f32,         // lower is better: match score (0..5) minus learned boost; shared scale for merging
     pub running: bool,      // app already has an open window -> Enter switches to it
+    pub detail: Option<String>, // right-hand label override ("Edge Tab", "Chrome · github.com")
+    pub icon: Option<String>,   // remote/data icon URL (tab favicons); native icons come from get_icon
 }
 
 impl Hit {
@@ -43,7 +48,7 @@ impl Hit {
             "file" => "file",
             k => routes::WEB_KINDS.iter().find(|w| **w == k).copied().unwrap_or("app"),
         };
-        Hit { name: t.name, path: t.id, kind, score, running: false }
+        Hit { name: t.name, path: t.id, kind, score, ..Default::default() }
     }
 }
 
@@ -110,6 +115,9 @@ fn search_local(query: String, st: State<'_, AppState>) -> Local {
     let b = st.brain.lock().unwrap();
     let mut hits = apps::search(&q, CANDIDATES);
     hits.extend(routes::calc(&query));
+    hits.extend(commands::search(&q));
+    hits.extend(tabs::search(&q, MAX_RESULTS));
+    hits.extend(bookmarks::search(&q, MAX_RESULTS));
     hits.extend(routes::web(&query));
     // Learned targets whose name doesn't match (abandon/retype links, learned files/folders/web).
     for (t, _) in b.top(&q, &ctx, now(), b.w.inject_threshold) {
@@ -219,6 +227,12 @@ async fn get_icon(path: String, kind: String) -> Option<String> {
     tauri::async_runtime::spawn_blocking(move || icons::icon(&path, &kind)).await.ok().flatten()
 }
 
+/// `confirmed` must be true for shutdown/restart/empty-bin (frontend asks for a second Enter).
+#[tauri::command]
+async fn run_system(path: String, confirmed: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || commands::run(&path, confirmed)).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn copy_text(text: String) -> Result<(), String> {
     clipboard::copy_text(&text)
@@ -236,6 +250,12 @@ async fn launch(path: String, kind: String) -> Result<&'static str, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if routes::is_web(&kind) {
             return tauri_plugin_opener::open_url(&path, None::<&str>).map(|_| "opened").map_err(|e| e.to_string());
+        }
+        if kind == "tab" {
+            return if tabs::focus(&path) { Ok("focused") } else { Err("browser disconnected".into()) };
+        }
+        if kind == "system" {
+            return Err("use run_system".into());
         }
         if (kind == "app" || switcher::is_app_path(&path)) && switcher::focus_existing(&path) {
             return Ok("switched");
@@ -311,9 +331,11 @@ pub fn run() {
                 Brain::in_memory(w)
             });
             app.manage(AppState { brain: Mutex::new(brain), ctx: Mutex::new(String::new()) });
+            tabs::start();
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 apps::index();
+                bookmarks::load();
                 apps::prewarm_targets();
                 // Cold start: seed only an empty brain (first run). Never delays the window.
                 if handle.state::<AppState>().brain.lock().unwrap().is_empty() {
@@ -341,6 +363,7 @@ pub fn run() {
             brain_reset,
             brain_pause,
             brain_reseed,
+            run_system,
             copy_text,
             instant_answer,
             get_icon,
@@ -357,7 +380,7 @@ mod tests {
     #[test]
     fn one_spotify_pick_pins_it_to_top() {
         let mut b = Brain::in_memory(Weights::default());
-        let file = Hit { name: "playboi carti.mp3".into(), path: r"D:\m\playboi carti.mp3".into(), kind: "file", score: 1.0, running: false };
+        let file = Hit { name: "playboi carti.mp3".into(), path: r"D:\m\playboi carti.mp3".into(), kind: "file", score: 1.0, ..Default::default() };
         let fresh = || {
             let mut v = vec![file.clone()];
             v.extend(routes::web("playboi carti"));

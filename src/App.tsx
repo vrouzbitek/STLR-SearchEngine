@@ -4,7 +4,17 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import ActionIcon, { ActionKind, BADGE } from "./ActionIcon";
 
-type Hit = { name: string; path: string; kind: Exclude<ActionKind, "search">; score: number; running: boolean };
+type Hit = {
+  name: string;
+  path: string;
+  kind: Exclude<ActionKind, "search">;
+  score: number;
+  running: boolean;
+  detail?: string | null; // right-hand label from the backend ("Edge Tab", "Chrome · github.com")
+  icon?: string | null; // remote favicon (tabs)
+};
+// Need a second Enter within the same selection (Rust also refuses them without `confirmed`).
+const DANGEROUS = ["sys:shutdown", "sys:restart", "sys:empty-bin"];
 type Answer = { text: string; source: string; url: string };
 type Local = { hits: Hit[]; ghost: string | null };
 type Zero = { hits: Hit[]; paused: boolean };
@@ -50,6 +60,7 @@ export default function App() {
   const [paused, setPaused] = useState(false);
   const [sel, setSel] = useState(0); // -1 = answer card
   const [answer, setAnswer] = useState<Answer | null>(null);
+  const [armed, setArmed] = useState<string | null>(null); // path of a dangerous command awaiting 2nd Enter
   const [icons, setIcons] = useState<Record<string, string>>({});
   const requested = useRef(new Set<string>());
   const reqId = useRef(0);
@@ -69,6 +80,8 @@ export default function App() {
   topKind.current = hits[0]?.kind;
 
   // Local (apps + brain) renders immediately; Everything results merge in when they arrive. Stale replies are dropped.
+  useEffect(() => setArmed(null), [query, sel]);
+
   useEffect(() => {
     const id = ++reqId.current;
     setSel(0);
@@ -193,6 +206,17 @@ export default function App() {
     const h = list[i];
     if (!h) return;
     if (h.kind === "calc") return copy(h.name); // ephemeral: never learned
+    if (h.kind === "system") {
+      const dangerous = DANGEROUS.includes(h.path);
+      if (dangerous && armed !== h.path) return setArmed(h.path); // first Enter only arms it
+      done(); // hide first so e.g. the lock screen isn't fighting our window
+      invoke("run_system", { path: h.path, confirmed: dangerous }).catch((e) => console.error("system failed:", e));
+      return;
+    }
+    if (h.kind === "tab") {
+      invoke("launch", { path: h.path, kind: h.kind }).catch((e) => console.error("focus failed:", e));
+      return done();
+    }
     const ab = abandoned.current;
     // The only path that writes to the brain: an explicit pick.
     invoke("commit", {
@@ -262,7 +286,7 @@ export default function App() {
     // Fills the whole window: DWM Acrylic + 8px native round corners sit exactly behind this container.
     <div className="h-full flex flex-col rounded-lg bg-black/40 border border-white/15 overflow-hidden text-white">
       <div className="h-[70px] shrink-0 flex items-center gap-3 px-5">
-        <ActionIcon kind={current?.kind ?? "search"} src={current && icons[current.path]} />
+        <ActionIcon kind={current?.kind ?? "search"} src={current && (icons[current.path] ?? current.icon ?? undefined)} />
         <div className="relative flex-1">
           <div aria-hidden className={`absolute inset-0 whitespace-pre pointer-events-none ${line}`}>
             <span className="invisible">{query}</span>
@@ -320,16 +344,20 @@ export default function App() {
                   onClick={() => run(i)}
                   className={`h-11 flex items-center gap-3 px-5 cursor-default ${i === sel ? "bg-white/15" : ""}`}
                 >
-                  <ActionIcon kind={h.kind} src={icons[h.path]} />
+                  <ActionIcon kind={h.kind} src={icons[h.path] ?? h.icon ?? undefined} />
                   <span className="flex-1 truncate text-sm text-white">{h.name}</span>
-                  {h.running ? (
+                  {armed === h.path ? (
+                    <span className="text-xs font-medium text-rose-300">Press Enter again to confirm</span>
+                  ) : h.running ? (
                     <span className="flex items-center gap-1.5 text-xs text-emerald-300">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                       Switch
                     </span>
                   ) : (
                     <span className="max-w-[45%] truncate text-xs text-white/60">
-                      {h.kind === "calc"
+                      {h.detail
+                        ? h.detail
+                        : h.kind === "calc"
                         ? "Enter to copy"
                         : h.kind === "folder" || h.kind === "file"
                           ? parentDir(h.path)
