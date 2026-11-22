@@ -208,6 +208,13 @@ export default function App() {
     hide();
   };
 
+  // Hide only AFTER the launch: Windows lets only the foreground process hand the foreground to another app
+  // (switch to Edge, browser focusing a tab). Hidden first, the switch fails and the app just flashes.
+  const open = (path: string, kind: string) =>
+    invoke("launch", { path, kind })
+      .catch((e) => console.error("launch failed:", e))
+      .finally(done);
+
   const copy = (text: string) =>
     invoke("copy_text", { text })
       .catch((e) => console.error("copy failed:", e))
@@ -224,10 +231,7 @@ export default function App() {
       invoke("run_system", { path: h.path, confirmed: dangerous }).catch((e) => console.error("system failed:", e));
       return;
     }
-    if (h.kind === "tab") {
-      invoke("launch", { path: h.path, kind: h.kind }).catch((e) => console.error("focus failed:", e));
-      return done();
-    }
+    if (h.kind === "tab") return open(h.path, h.kind);
     const ab = abandoned.current;
     // Skip penalties only among peers: a ↳ pick ranks against its siblings (never penalizes the app itself),
     // a top-level pick ranks against top-level results (never the ↳ rows).
@@ -242,14 +246,10 @@ export default function App() {
         abandonedAgeMs: ab ? Date.now() - ab.t : 0,
       },
     }).catch((e) => console.error("commit failed:", e));
-    invoke<string>("launch", { path: h.path, kind: h.kind }).catch((e) => console.error("launch failed:", e));
-    done();
+    open(h.path, h.kind);
   };
 
-  const openSource = (a: Answer) => {
-    invoke("launch", { path: a.url, kind: "url" }).catch((e) => console.error("open failed:", e));
-    done();
-  };
+  const openSource = (a: Answer) => open(a.url, "url");
 
   const runCommand = async () => {
     if (cmd === "/settings") {
