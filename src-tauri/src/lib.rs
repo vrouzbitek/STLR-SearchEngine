@@ -478,6 +478,12 @@ async fn launch(path: String, kind: String) -> Result<&'static str, String> {
         if (kind == "app" || switcher::is_app_path(&path)) && switcher::focus_existing(&path) {
             return Ok("switched");
         }
+        // We just took the keypress, so we may hand foreground rights on: an already-running app woken by its
+        // launcher (Discord in the tray) otherwise only flashes in the taskbar instead of coming to the front.
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
+            let _ = AllowSetForegroundWindow(ASFW_ANY);
+        }
         tauri_plugin_opener::open_path(&path, None::<&str>).map(|_| "launched").map_err(|e| e.to_string())
     })
     .await

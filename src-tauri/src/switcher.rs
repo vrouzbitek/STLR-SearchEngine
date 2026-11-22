@@ -121,13 +121,33 @@ pub fn resolve(path: &str) -> Option<String> {
             let t = if lnk_app_id(path).is_some() {
                 None
             } else {
-                lnk_target(path).map(|s| s.to_lowercase()).filter(|s| s.ends_with(".exe"))
+                lnk_target(path).map(|s| squirrel_app(&s.to_lowercase())).filter(|s| s.ends_with(".exe"))
             };
             TARGETS.lock().unwrap().insert(key, t.clone());
             t
         }
         _ => None,
     }
+}
+
+/// Squirrel installs (Discord, Slack, Teams classic): the shortcut runs a stub `<dir>\X.exe` while the
+/// window belongs to `<dir>\app-<version>\X.exe`. Map the stub to the newest version so Switch finds it.
+fn squirrel_app(exe: &str) -> String {
+    let p = Path::new(exe);
+    let (Some(dir), Some(name)) = (p.parent(), p.file_name()) else { return exe.into() };
+    let version = |d: &Path| -> Option<Vec<u32>> {
+        let v = d.file_name()?.to_str()?.strip_prefix("app-")?;
+        v.split('.').map(|n| n.parse().ok()).collect()
+    };
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|d| d.join(name).is_file())
+        .filter_map(|d| Some((version(&d)?, d)))
+        .max()
+        .map_or(exe.into(), |(_, d)| d.join(name).to_string_lossy().to_lowercase())
 }
 
 /// Hot-path variant: cache only, never touches COM or disk.
@@ -220,6 +240,21 @@ mod tests {
     fn pwa_window_is_not_the_browser() {
         super::refresh();
         assert!(!super::running_exes().iter().any(|e| e.ends_with("msedge.exe")), "{:?}", super::running_exes());
+    }
+
+    #[test]
+    fn squirrel_stub_maps_to_newest_app_dir() {
+        let root = std::env::temp_dir().join("stlr-squirrel-test");
+        let _ = std::fs::remove_dir_all(&root);
+        for d in ["", "app-1.0.999", "app-1.0.10000", "packages"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+            std::fs::write(root.join(d).join("discord.exe"), "").unwrap();
+        }
+        let stub = root.join("discord.exe").to_string_lossy().to_lowercase();
+        assert_eq!(super::squirrel_app(&stub), root.join("app-1.0.10000").join("discord.exe").to_string_lossy().to_lowercase());
+        let plain = root.join("packages").join("discord.exe").to_string_lossy().to_lowercase();
+        assert_eq!(super::squirrel_app(&plain), plain, "no app-* siblings: unchanged");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Manual: a Store app shortcut (Claude) with an Explorer window open must not count as running.
