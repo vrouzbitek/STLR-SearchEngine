@@ -7,6 +7,7 @@ mod calc;
 mod clipboard;
 mod commands;
 mod everything;
+mod folders;
 mod icons;
 mod routes;
 mod seeder;
@@ -128,6 +129,7 @@ fn search_local(query: String, st: State<'_, AppState>) -> Local {
     let mut hits = apps::search(&q, CANDIDATES);
     hits.extend(routes::calc(&query));
     hits.extend(commands::search(&q));
+    hits.extend(folders::search(&q));
     hits.extend(tabs::search(&q, MAX_RESULTS));
     hits.extend(bookmarks::search(&q, MAX_RESULTS));
     hits.extend(routes::web(&query));
