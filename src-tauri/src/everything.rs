@@ -15,6 +15,7 @@ const COPYDATA_QUERYW: usize = 2;
 const REPLY_ID: u32 = 0x5354_4C52; // arbitrary tag so we only accept our own reply
 const IPC_FOLDER: u32 = 1;
 const IPC_DRIVE: u32 = 2;
+const MATCH_PATH: u32 = 4; // EVERYTHING_IPC_MATCHPATH search flag
 const FETCH: u32 = 64; // fetch more than we show, then re-rank locally
 const TIMEOUT: Duration = Duration::from_millis(400);
 const CLASS: PCWSTR = w!("STLR_EVERYTHING_REPLY");
@@ -51,11 +52,17 @@ pub fn search(query: &str, max: usize) -> Vec<Hit> {
         return vec![];
     }
     let Some(target) = everything_window() else { return vec![] };
-    let Some(bytes) = (unsafe { round_trip(target, query) }) else { return vec![] };
-    rank(parse(&bytes), query, max)
+    let Some(bytes) = (unsafe { round_trip(target, query, 0) }) else { return vec![] };
+    let items = parse(&bytes);
+    if !items.is_empty() {
+        return rank(items, query, max, false);
+    }
+    // Nothing by name: let the words match folder names too ("reaper projekty" -> files in ...\REAPER\Projekty).
+    let Some(bytes) = (unsafe { round_trip(target, query, MATCH_PATH) }) else { return vec![] };
+    rank(parse(&bytes), query, max, true)
 }
 
-unsafe fn round_trip(target: HWND, query: &str) -> Option<Vec<u8>> {
+unsafe fn round_trip(target: HWND, query: &str, flags: u32) -> Option<Vec<u8>> {
     unsafe {
         let hinst = GetModuleHandleW(None).ok()?;
         static REG: Once = Once::new();
@@ -71,7 +78,7 @@ unsafe fn round_trip(target: HWND, query: &str) -> Option<Vec<u8>> {
 
         // EVERYTHING_IPC_QUERYW: 5 DWORDs + null-terminated UTF-16 search string.
         let mut buf = Vec::<u8>::new();
-        for v in [hwnd.0 as usize as u32, REPLY_ID, 0, 0, FETCH] {
+        for v in [hwnd.0 as usize as u32, REPLY_ID, flags, 0, FETCH] {
             buf.extend_from_slice(&v.to_le_bytes());
         }
         for u in query.encode_utf16().chain([0]) {
@@ -135,11 +142,21 @@ fn parse(b: &[u8]) -> Vec<(String, String, bool)> {
 }
 
 /// Exact/prefix name matches first, folders before files on ties, then shorter paths.
-fn rank(items: Vec<(String, String, bool)>, query: &str, max: usize) -> Vec<Hit> {
+/// Several words all found in the name (or, with `by_path`, in the full path) score 2: above the
+/// web routes (3+), so "praca dyplomowa" shows the file, not only "search Google".
+fn rank(items: Vec<(String, String, bool)>, query: &str, max: usize, by_path: bool) -> Vec<Hit> {
     let q = query.to_lowercase();
+    // Everything syntax (ext:pdf, *.rpp) isn't literal text; those terms are already filtered by Everything.
+    let words: Vec<&str> = q.split_whitespace().filter(|w| !w.contains([':', '*', '?', '"'])).collect();
+    let q = words.join(" ");
     let mut v: Vec<_> = items
         .into_iter()
-        .map(|(name, path, dir)| (score(&name.to_lowercase(), &q).unwrap_or(5), dir, name, path))
+        .map(|(name, path, dir)| {
+            let n = name.to_lowercase();
+            let hay = if by_path { path.to_lowercase() } else { n.clone() };
+            let all = !words.is_empty() && words.iter().all(|w| hay.contains(w));
+            (score(&n, &q).or(all.then_some(2)).unwrap_or(5), dir, name, path)
+        })
         .collect();
     v.sort_by_key(|(s, dir, _, path)| (*s, !*dir, path.len()));
     v.into_iter()
@@ -174,9 +191,35 @@ mod tests {
         let p = parse(&b);
         assert_eq!(p[1], ("Reaper".into(), r"D:\Music\Reaper".into(), true));
         assert_eq!(p[2].1, r"C:\my reaper");
-        let r = rank(p, "reaper", 6);
+        let r = rank(p, "reaper", 6, false);
         assert_eq!(r.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["Reaper", "reaper.txt", "my reaper"]);
         assert_eq!(r[0].kind, "folder");
+    }
+
+    #[test]
+    fn multi_word_matches_beat_web_routes() {
+        let item = |name: &str, path: &str| (name.to_string(), path.to_string(), false);
+        // words in any order, all in the name -> 2 (routes start at 3)
+        let r = rank(vec![item("Praca dyplomowa final.pdf", r"C:\Docs\Praca dyplomowa final.pdf")], "dyplomowa praca", 6, false);
+        assert_eq!(r[0].score, 2.0);
+        // Everything syntax terms are ignored for scoring
+        let r = rank(vec![item("praca.pdf", r"C:\praca.pdf")], "praca ext:pdf", 6, false);
+        assert_eq!(r[0].score, 1.0);
+        // path retry: a word only in a folder name counts, but only when matching by path
+        let p = item("alienhouse.rpp", r"E:\REAPER\Projekty\alienhouse.rpp");
+        assert_eq!(rank(vec![p.clone()], "projekty alienhouse", 6, true)[0].score, 2.0);
+        assert_eq!(rank(vec![p], "projekty alienhouse", 6, false)[0].score, 5.0);
+    }
+
+    // Needs Everything running: `cargo test live_multiword -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_multiword() {
+        for q in ["reaper projekty", "windows web wallpaper img0"] {
+            let hits = search(q, 4);
+            println!("{q:?}: {:?}", hits.iter().map(|h| (h.score, &h.path)).collect::<Vec<_>>());
+            assert!(hits.iter().all(|h| h.score <= 2.0), "all-words matches must outrank web routes");
+        }
     }
 
     #[test]
