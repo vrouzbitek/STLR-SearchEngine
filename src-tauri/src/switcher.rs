@@ -73,10 +73,31 @@ pub fn refresh() {
             continue;
         }
         if let Some(exe) = pids.entry(pid).or_insert_with(|| process_path(pid).map(|p| p.to_lowercase())) {
+            if is_browser(exe) && is_web_app(h) {
+                continue; // an installed web app (PWA) runs as msedge.exe/chrome.exe but is not the browser
+            }
             map.entry(exe.clone()).or_insert(h.0 as isize);
         }
     }
     *RUNNING.write().unwrap() = map;
+}
+
+fn is_browser(exe: &str) -> bool {
+    ["msedge.exe", "chrome.exe", "brave.exe", "vivaldi.exe", "opera.exe"].iter().any(|b| exe.ends_with(b))
+}
+
+/// PWA windows carry their own AppUserModelID ("127.0.0.1-79B5721F_x!App", "Chrome._crx_abc..."); browser windows don't.
+fn is_web_app(hwnd: HWND) -> bool {
+    use windows::Win32::Foundation::PROPERTYKEY;
+    use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
+    const PKEY_APP_USER_MODEL_ID: PROPERTYKEY =
+        PROPERTYKEY { fmtid: windows::core::GUID::from_u128(0x9F4C2855_9F79_4B39_A8D0_E1D42DE1D5F3), pid: 5 };
+    unsafe {
+        let Ok(store) = SHGetPropertyStoreForWindow::<IPropertyStore>(hwnd) else { return false };
+        let Ok(v) = store.GetValue(&PKEY_APP_USER_MODEL_ID) else { return false };
+        let id = v.to_string();
+        id.contains('!') || id.contains("_crx_")
+    }
 }
 
 fn ext(path: &str) -> String {
@@ -183,5 +204,16 @@ unsafe fn lnk_target_raw(path: &str) -> Option<String> {
         link.GetPath(&mut buf, std::ptr::null_mut(), 0).ok()?;
         let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         (end > 0).then(|| String::from_utf16_lossy(&buf[..end]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Manual: run with a PWA (e.g. Edge "Johnny – dashboard") open and the browser itself closed.
+    #[test]
+    #[ignore]
+    fn pwa_window_is_not_the_browser() {
+        super::refresh();
+        assert!(!super::running_exes().iter().any(|e| e.ends_with("msedge.exe")), "{:?}", super::running_exes());
     }
 }
