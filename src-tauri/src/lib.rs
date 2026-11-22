@@ -480,9 +480,18 @@ fn apply_dwm(w: &tauri::WebviewWindow, theme: settings::Theme) {
     let m = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
     unsafe {
         let _ = DwmExtendFrameIntoClientArea(hwnd, &m);
-        // With the frame extended, DWM paints caption buttons (min/max/close) for any window that still has
-        // WS_SYSMENU / min / max box styles, even undecorated ones. The bar must have none.
-        use windows::Win32::UI::WindowsAndMessaging::*;
+    }
+    strip_caption(w);
+}
+
+/// With the frame extended, DWM paints caption buttons (min/max/close) for any window that has
+/// WS_SYSMENU / min / max box styles, even undecorated ones. tao rewrites the whole style on every
+/// flag change (show/hide included, always adding WS_SYSMENU), so this runs after each show.
+fn strip_caption(w: &tauri::WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    let Ok(h) = w.hwnd() else { return };
+    let hwnd = windows::Win32::Foundation::HWND(h.0 as _);
+    unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
         let clean = style & !((WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0) as isize);
         if clean != style {
@@ -524,6 +533,9 @@ pub fn show_search(app: &AppHandle) {
     let _ = w.set_size(LogicalSize::new(680.0, 72.0)); // back to bar-only before centering
     let _ = w.center();
     let _ = w.show();
+    // Queued on the event loop after show() so it runs after tao has rewritten the style.
+    let bar = w.clone();
+    let _ = app.run_on_main_thread(move || strip_caption(&bar));
     let _ = w.set_focus();
     let _ = app.emit("focus-input", ());
 }

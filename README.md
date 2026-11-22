@@ -66,6 +66,7 @@
 npm install
 npm run tauri dev     # development
 npm run tauri build   # NSIS installer in src-tauri/target/release/bundle/nsis/
+powershell -File scripts/smoke-release.ps1   # release exe must start and stay up (no startup panic)
 ```
 
 ### Browser extension (open tabs)
