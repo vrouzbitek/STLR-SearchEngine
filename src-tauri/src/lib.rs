@@ -15,6 +15,7 @@ mod subactions;
 mod switcher;
 mod tabs;
 mod tray;
+mod winkey;
 mod wizard;
 
 use brain::{Brain, Commit, Stats, Target, Weights};
@@ -286,9 +287,22 @@ fn apply_shortcut(app: &AppHandle, old: &str, new: &str) -> Result<(), String> {
         return Err(format!("unsupported shortcut {new}"));
     }
     let gs = app.global_shortcut();
-    let _ = gs.unregister(old);
+    if new == settings::WIN_KEY {
+        let _ = gs.unregister(old);
+        winkey::set(app, true);
+        return Ok(());
+    }
+    if old == settings::WIN_KEY {
+        winkey::set(app, false);
+    } else {
+        let _ = gs.unregister(old);
+    }
     gs.register(new).map_err(|e| {
-        let _ = gs.register(old);
+        if old == settings::WIN_KEY {
+            winkey::set(app, true);
+        } else {
+            let _ = gs.register(old);
+        }
         format!("{new} is not available ({e})")
     })
 }
@@ -597,7 +611,9 @@ pub fn run() {
             answers::configure(settings.web_answers, &settings.llm);
             // Saved shortcut, falling back to the default if another app owns it.
             let gs = app.global_shortcut();
-            if let Err(e) = gs.register(settings.shortcut.as_str()) {
+            if settings.shortcut == settings::WIN_KEY {
+                winkey::set(app.handle(), true);
+            } else if let Err(e) = gs.register(settings.shortcut.as_str()) {
                 eprintln!("shortcut {} unavailable ({e}), using {}", settings.shortcut, settings::SHORTCUTS[0]);
                 settings.shortcut = settings::SHORTCUTS[0].into();
                 let _ = gs.register(settings::SHORTCUTS[0]);

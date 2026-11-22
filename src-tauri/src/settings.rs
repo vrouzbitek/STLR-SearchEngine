@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 
-/// Shortcuts offered in the UI (all parse as Tauri global-shortcut strings).
-pub const SHORTCUTS: [&str; 4] = ["Alt+Space", "Ctrl+Space", "Alt+Q", "Ctrl+Alt+Space"];
+/// Shortcuts offered in the UI (all parse as Tauri global-shortcut strings, except `WIN_KEY`).
+pub const SHORTCUTS: [&str; 5] = ["Alt+Space", "Ctrl+Space", "Alt+Q", "Ctrl+Alt+Space", WIN_KEY];
+/// A lone tap of the Windows key, replacing Start (low-level hook in `winkey.rs`, not a global shortcut).
+pub const WIN_KEY: &str = "Win";
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]

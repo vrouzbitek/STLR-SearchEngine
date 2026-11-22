@@ -15,7 +15,7 @@ type Settings = {
 };
 type Status = { paused: boolean; autostart: boolean; browsers: { browser: string; tabs: number }[]; extensionPath: string };
 
-const SHORTCUTS = ["Alt+Space", "Ctrl+Space", "Alt+Q", "Ctrl+Alt+Space"];
+const SHORTCUTS = ["Alt+Space", "Ctrl+Space", "Alt+Q", "Ctrl+Alt+Space", "Win"];
 const THEMES: { id: Theme; label: string; hint: string }[] = [
   { id: "acrylic", label: "Acrylic", hint: "Native Windows 11 translucency" },
   { id: "stlr", label: "STLR", hint: "Pure black, monospace, [ BRACKETED ] labels" },
@@ -151,7 +151,7 @@ export default function SettingsPanel() {
             <select className={input} value={s.shortcut} onChange={(e) => save({ ...s, shortcut: e.target.value })}>
               {SHORTCUTS.map((k) => (
                 <option key={k} value={k} className="bg-[var(--panel)]">
-                  {k}
+                  {k === "Win" ? "Win (replaces Start)" : k}
                 </option>
               ))}
             </select>
