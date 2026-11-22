@@ -62,6 +62,85 @@ pub fn calc(query: &str) -> Option<Hit> {
     crate::calc::eval(query).map(|r| hit(&r, format!("calc:{r}"), "calc", CALC_SCORE))
 }
 
+/// "yt austin evans" beats prefix matches (1) and all-words files (2); only an exact local name (0) wins,
+/// so "google chrome" still opens Chrome.
+const KEYWORD_SCORE: f32 = 0.5;
+
+/// Keyword prefix -> site search: (aliases, label, url prefix the encoded query is appended to, kind).
+/// Kind "url" rows get a "Search <label>" chip and the site's favicon.
+const SITES: &[(&[&str], &str, &str, &str)] = &[
+    (&["yt", "youtube"], "YouTube", "https://www.youtube.com/results?search_query=", "youtube"),
+    (&["ytm", "ytmusic"], "YouTube Music", "https://music.youtube.com/search?q=", "url"),
+    (&["spotify", "spoti", "spot", "spt"], "Spotify", "spotify:search:", "spotify"),
+    (&["google", "gg"], "Google", "https://www.google.com/search?q=", "google"),
+    (&["img", "images", "obrazy"], "Google Images", "https://www.google.com/search?tbm=isch&q=", "url"),
+    (&["maps", "gmaps", "mapy"], "Google Maps", "https://www.google.com/maps/search/", "url"),
+    (&["translate", "tlumacz", "gt"], "Google Translate", "https://translate.google.com/?sl=auto&text=", "url"),
+    (&["gmail", "mail"], "Gmail", "https://mail.google.com/mail/u/0/#search/", "url"),
+    (&["drive", "gdrive", "dysk"], "Google Drive", "https://drive.google.com/drive/search?q=", "url"),
+    (&["ig", "insta", "instagram"], "Instagram", "", "instagram"),
+    (&["tt", "tiktok"], "TikTok", "https://www.tiktok.com/search?q=", "url"),
+    (&["x", "twitter"], "X", "https://x.com/search?q=", "url"),
+    (&["fb", "facebook"], "Facebook", "https://www.facebook.com/search/top?q=", "url"),
+    (&["reddit", "rd"], "Reddit", "https://www.reddit.com/search/?q=", "url"),
+    (&["tw", "twitch"], "Twitch", "https://www.twitch.tv/search?term=", "url"),
+    (&["kick"], "Kick", "https://kick.com/search?query=", "url"),
+    (&["pin", "pinterest"], "Pinterest", "https://www.pinterest.com/search/pins/?q=", "url"),
+    (&["li", "linkedin"], "LinkedIn", "https://www.linkedin.com/search/results/all/?keywords=", "url"),
+    (&["sc", "soundcloud"], "SoundCloud", "https://soundcloud.com/search?q=", "url"),
+    (&["genius", "tekst"], "Genius", "https://genius.com/search?q=", "url"),
+    (&["netflix", "nf"], "Netflix", "https://www.netflix.com/search?q=", "url"),
+    (&["imdb"], "IMDb", "https://www.imdb.com/find/?q=", "url"),
+    (&["filmweb", "fw"], "Filmweb", "https://www.filmweb.pl/search#/?query=", "url"),
+    (&["wiki", "wikipedia"], "Wikipedia", "https://pl.wikipedia.org/w/index.php?search=", "url"),
+    (&["enwiki"], "Wikipedia (EN)", "https://en.wikipedia.org/w/index.php?search=", "url"),
+    (&["allegro", "al"], "Allegro", "https://allegro.pl/listing?string=", "url"),
+    (&["olx"], "OLX", "https://www.olx.pl/oferty/?q=", "url"),
+    (&["amazon", "amz"], "Amazon", "https://www.amazon.pl/s?k=", "url"),
+    (&["ceneo"], "Ceneo", "https://www.ceneo.pl/szukaj-", "url"),
+    (&["vinted"], "Vinted", "https://www.vinted.pl/catalog?search_text=", "url"),
+    (&["ebay"], "eBay", "https://www.ebay.com/sch/i.html?_nkw=", "url"),
+    (&["steam"], "Steam", "https://store.steampowered.com/search/?term=", "url"),
+    (&["gh", "github"], "GitHub", "https://github.com/search?q=", "url"),
+    (&["so", "stackoverflow"], "Stack Overflow", "https://stackoverflow.com/search?q=", "url"),
+    (&["npm"], "npm", "https://www.npmjs.com/search?q=", "url"),
+    (&["crates", "crate"], "crates.io", "https://crates.io/search?q=", "url"),
+    (&["gpt", "chatgpt"], "ChatGPT", "https://chatgpt.com/?q=", "url"),
+    (&["claude"], "Claude", "https://claude.ai/new?q=", "url"),
+    (&["pplx", "perplexity"], "Perplexity", "https://www.perplexity.ai/search?q=", "url"),
+    (&["ddg", "duckduckgo"], "DuckDuckGo", "https://duckduckgo.com/?q=", "url"),
+    (&["bing"], "Bing", "https://www.bing.com/search?q=", "url"),
+];
+
+/// Single handle-like token -> profile, otherwise keyword search.
+fn instagram(q: &str) -> String {
+    if q.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_') && as_url(q).is_none() {
+        format!("https://www.instagram.com/{q}/")
+    } else {
+        format!("https://www.instagram.com/explore/search/keyword/?q={}", encode(q))
+    }
+}
+
+/// "yt austin evans" -> YouTube search for "austin evans". Needs a non-empty rest, so "spotify" alone stays the app.
+fn keyword(name: &str, q: &str) -> Option<Hit> {
+    let (kw, rest) = q.split_once(' ')?;
+    let rest = rest.trim();
+    let &(_, label, prefix, kind) = SITES.iter().find(|s| s.0.contains(&kw))?;
+    if rest.is_empty() {
+        return None;
+    }
+    let shown = name.split_once(char::is_whitespace).map_or(rest, |(_, r)| r.trim());
+    let path = if kind == "instagram" { instagram(rest) } else { format!("{prefix}{}", encode(rest)) };
+    let kind = WEB_KINDS.into_iter().find(|k| *k == kind)?;
+    let mut h = hit(shown, path, kind, KEYWORD_SCORE);
+    if kind == "url" {
+        h.detail = Some(format!("Search {label}"));
+        let host = prefix.split('/').nth(2)?;
+        h.icon = Some(format!("https://www.google.com/s2/favicons?domain={host}&sz=64"));
+    }
+    Some(h)
+}
+
 /// Web actions for a query. Ids use the normalized query so learning is case-insensitive.
 pub fn web(query: &str) -> Vec<Hit> {
     let name = query.trim();
@@ -74,16 +153,11 @@ pub fn web(query: &str) -> Vec<Hit> {
     if let Some(url) = as_url(name) {
         v.push(hit(name, url, "url", URL_SCORE));
     }
+    v.extend(keyword(name, &q));
     v.push(hit(name, format!("https://www.google.com/search?q={e}"), "google", ROUTE_BASE));
     v.push(hit(name, format!("https://www.youtube.com/results?search_query={e}"), "youtube", ROUTE_BASE + 0.05));
     v.push(hit(name, format!("spotify:search:{e}"), "spotify", ROUTE_BASE + 0.1));
-    // Single handle-like token -> profile, otherwise keyword search.
-    let ig = if q.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_') && as_url(&q).is_none() {
-        format!("https://www.instagram.com/{q}/")
-    } else {
-        format!("https://www.instagram.com/explore/search/keyword/?q={e}")
-    };
-    v.push(hit(name, ig, "instagram", ROUTE_BASE + 0.15));
+    v.push(hit(name, instagram(&q), "instagram", ROUTE_BASE + 0.15));
     v
 }
 
@@ -113,5 +187,28 @@ mod tests {
         assert_eq!(web("github.com")[0].kind, "url");
         assert!(web("/brain").is_empty());
         assert_eq!(encode("ł ó"), "%C5%82%20%C3%B3");
+    }
+
+    #[test]
+    fn keyword_routes() {
+        let first = |q: &str| web(q).into_iter().find(|h| h.score == KEYWORD_SCORE);
+        let yt = first("yt Austin Evans").unwrap();
+        assert_eq!((yt.kind, yt.name.as_str()), ("youtube", "Austin Evans"));
+        assert_eq!(yt.path, "https://www.youtube.com/results?search_query=austin%20evans");
+        assert_eq!(first("youtube austin evans").unwrap().path, yt.path);
+        for q in ["spotify vorzu", "spoti vorzu", "spot vorzu"] {
+            assert_eq!(first(q).unwrap().path, "spotify:search:vorzu", "{q}");
+        }
+        assert_eq!(first("ig travisscott").unwrap().path, "https://www.instagram.com/travisscott/");
+        let tw = first("tw xqc").unwrap();
+        assert_eq!((tw.kind, tw.detail.as_deref()), ("url", Some("Search Twitch")));
+        assert!(tw.icon.unwrap().contains("domain=www.twitch.tv"));
+        for no in ["spotify", "yt", "yt ", "austin evans", "/yt x"] {
+            assert!(first(no).is_none(), "{no:?}");
+        }
+        // Every row builds a URL (kind known, host parseable).
+        for s in SITES {
+            assert!(first(&format!("{} x", s.0[0])).is_some(), "{}", s.1);
+        }
     }
 }
