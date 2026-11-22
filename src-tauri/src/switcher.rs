@@ -73,8 +73,14 @@ pub fn refresh() {
             continue;
         }
         if let Some(exe) = pids.entry(pid).or_insert_with(|| process_path(pid).map(|p| p.to_lowercase())) {
-            if is_browser(exe) && is_web_app(h) {
+            if is_browser(exe) && window_app_id(h).is_some_and(|id| id.contains('!') || id.contains("_crx_")) {
                 continue; // an installed web app (PWA) runs as msedge.exe/chrome.exe but is not the browser
+            }
+            // Store/MSIX apps: also key by the process's package AppUserModelID, which is what their shortcuts resolve to.
+            if exe.contains("\\windowsapps\\")
+                && let Some(id) = process_app_id(pid)
+            {
+                map.entry(aumid_key(&id)).or_insert(h.0 as isize);
             }
             map.entry(exe.clone()).or_insert(h.0 as isize);
         }
@@ -82,21 +88,38 @@ pub fn refresh() {
     *RUNNING.write().unwrap() = map;
 }
 
+/// Package identity of a Store/MSIX process ("Claude_pzs8sxrjxfjjc!Claude"); None for plain Win32 processes.
+fn process_app_id(pid: u32) -> Option<String> {
+    use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 256];
+        let mut len = buf.len() as u32;
+        let err = GetApplicationUserModelId(h, &mut len, Some(PWSTR(buf.as_mut_ptr())));
+        let _ = CloseHandle(h);
+        err.is_ok().then(|| String::from_utf16_lossy(&buf[..len.saturating_sub(1) as usize]))
+    }
+}
+
+fn aumid_key(id: &str) -> String {
+    format!("aumid:{}", id.to_lowercase())
+}
+
 fn is_browser(exe: &str) -> bool {
     ["msedge.exe", "chrome.exe", "brave.exe", "vivaldi.exe", "opera.exe"].iter().any(|b| exe.ends_with(b))
 }
 
-/// PWA windows carry their own AppUserModelID ("127.0.0.1-79B5721F_x!App", "Chrome._crx_abc..."); browser windows don't.
-fn is_web_app(hwnd: HWND) -> bool {
+/// The window's explicit AppUserModelID: PWAs ("127.0.0.1-79B5721F_x!App", "Chrome._crx_abc..."),
+/// Store apps ("Claude_pzs8sxrjxfjjc!Claude"). Plain Win32 windows have none.
+fn window_app_id(hwnd: HWND) -> Option<String> {
     use windows::Win32::Foundation::PROPERTYKEY;
     use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
     const PKEY_APP_USER_MODEL_ID: PROPERTYKEY =
         PROPERTYKEY { fmtid: windows::core::GUID::from_u128(0x9F4C2855_9F79_4B39_A8D0_E1D42DE1D5F3), pid: 5 };
     unsafe {
-        let Ok(store) = SHGetPropertyStoreForWindow::<IPropertyStore>(hwnd) else { return false };
-        let Ok(v) = store.GetValue(&PKEY_APP_USER_MODEL_ID) else { return false };
-        let id = v.to_string();
-        id.contains('!') || id.contains("_crx_")
+        let store = SHGetPropertyStoreForWindow::<IPropertyStore>(hwnd).ok()?;
+        let id = store.GetValue(&PKEY_APP_USER_MODEL_ID).ok()?.to_string();
+        (!id.is_empty()).then_some(id)
     }
 }
 
@@ -117,9 +140,10 @@ pub fn resolve(path: &str) -> Option<String> {
             if let Some(t) = TARGETS.lock().unwrap().get(&key) {
                 return t.clone();
             }
-            // Store/MSIX app shortcuts resolve to explorer.exe: matching that would "switch" to any Explorer window.
-            let t = if lnk_app_id(path).is_some() {
-                None
+            // Store/MSIX app shortcuts resolve to explorer.exe: match their window by AppUserModelID instead,
+            // otherwise they would "switch" to any Explorer window.
+            let t = if let Some(id) = lnk_app_id(path) {
+                Some(aumid_key(&id))
             } else {
                 lnk_target(path).map(|s| squirrel_app(&s.to_lowercase())).filter(|s| s.ends_with(".exe"))
             };
@@ -257,13 +281,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Manual: a Store app shortcut (Claude) with an Explorer window open must not count as running.
+    /// Manual, with Claude desktop open: its Store shortcut finds the Claude window (not an Explorer window).
     #[test]
     #[ignore]
-    fn store_app_shortcut_is_not_explorer() {
+    fn store_app_shortcut_finds_its_window() {
         let p = r"E:\ProgramData\Microsoft\Windows\Start Menu\Programs\🎮 Gamedev\Claude.lnk";
-        assert_eq!(super::resolve(p), None);
+        assert_eq!(super::resolve(p).as_deref(), Some("aumid:claude_pzs8sxrjxfjjc!claude"));
         super::refresh();
-        assert!(!super::is_running(p));
+        assert!(super::is_running(p), "Claude desktop must be open: its window is found by AppUserModelID");
     }
 }
