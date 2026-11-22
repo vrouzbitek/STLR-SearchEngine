@@ -206,6 +206,9 @@ export default function SettingsPanel() {
             >
               {confirmReset ? "Click again to wipe everything" : "Reset brain"}
             </button>
+            <button className={button} onClick={() => invoke("open_wizard")}>
+              Run Setup Wizard
+            </button>
           </div>
         </Section>
 

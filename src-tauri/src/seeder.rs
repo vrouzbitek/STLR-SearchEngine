@@ -6,10 +6,11 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-const TASKBAR: f64 = 1.5;
-const OPEN: f64 = 1.2;
-const STARTUP: f64 = 1.0;
-const RECENT: f64 = 0.8;
+/// Source weights (x `Weights::seed_scale`). TASKBAR is also the cap for anything the wizard seeds.
+pub const TASKBAR: f64 = 1.5;
+pub const OPEN: f64 = 1.2;
+pub const STARTUP: f64 = 1.0;
+pub const RECENT: f64 = 0.8;
 const RECENT_FOLDERS: usize = 5;
 
 #[derive(Serialize, Default, Debug)]
@@ -44,15 +45,32 @@ fn app_target(lnk: &Path, index: &HashMap<String, (String, String)>) -> Target {
     }
 }
 
-/// Collect seeds (target, source weight), de-duplicated by id keeping the strongest source.
+/// A detected seed: target, source weight, and which signal found it ("taskbar" | "open" | "startup" | "recent").
+pub type Seed = (Target, f64, &'static str);
+
+/// Collect seeds for auto-seeding (`/brain reseed`, reset): all four signals, de-duplicated.
 pub fn collect() -> (Vec<(Target, f64)>, Report) {
+    let (seeds, mut r) = detect(true);
+    let out: Vec<_> = dedupe(seeds).into_iter().map(|(t, w, _)| (t, w)).collect();
+    r.total = out.len();
+    (out, r)
+}
+
+/// App signals only (taskbar, open windows, startup), de-duplicated: the first-run wizard's "Detected Apps".
+pub fn detect_apps() -> Vec<Seed> {
+    let mut v = dedupe(detect(false).0);
+    v.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase())));
+    v
+}
+
+fn detect(include_recent: bool) -> (Vec<Seed>, Report) {
     let index = apps::by_target();
     let mut r = Report::default();
-    let mut seeds: Vec<(Target, f64)> = Vec::new();
+    let mut seeds: Vec<Seed> = Vec::new();
 
     if let Some(dir) = appdata(r"Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar") {
         for l in lnks(&dir) {
-            seeds.push((app_target(&l, &index), TASKBAR));
+            seeds.push((app_target(&l, &index), TASKBAR, "taskbar"));
             r.taskbar += 1;
         }
     }
@@ -60,18 +78,18 @@ pub fn collect() -> (Vec<(Target, f64)>, Report) {
     switcher::refresh();
     for exe in switcher::running_exes() {
         if let Some((name, p)) = index.get(&exe) {
-            seeds.push((Target { id: p.clone(), name: name.clone(), kind: "app".into() }, OPEN));
+            seeds.push((Target { id: p.clone(), name: name.clone(), kind: "app".into() }, OPEN, "open"));
             r.open += 1;
         }
     }
     if let Some(dir) = appdata(r"Microsoft\Windows\Start Menu\Programs\Startup") {
         for l in lnks(&dir) {
-            seeds.push((app_target(&l, &index), STARTUP));
+            seeds.push((app_target(&l, &index), STARTUP, "startup"));
             r.startup += 1;
         }
     }
     // Recent: newest shortcuts first, keep those pointing at existing folders.
-    if let Some(dir) = appdata(r"Microsoft\Windows\Recent") {
+    if let Some(dir) = appdata(r"Microsoft\Windows\Recent").filter(|_| include_recent) {
         let mut recent: Vec<(std::time::SystemTime, PathBuf)> =
             lnks(&dir).into_iter().filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p))).collect();
         recent.sort_by(|a, b| b.0.cmp(&a.0));
@@ -84,20 +102,25 @@ pub fn collect() -> (Vec<(Target, f64)>, Report) {
             let tp = Path::new(&target);
             if tp.is_dir() && seen.insert(target.to_lowercase()) {
                 let name = tp.file_name().map_or(target.clone(), |n| n.to_string_lossy().into_owned());
-                seeds.push((Target { id: target.clone(), name, kind: "folder".into() }, RECENT));
+                seeds.push((Target { id: target.clone(), name, kind: "folder".into() }, RECENT, "recent"));
                 r.recent += 1;
             }
         }
     }
 
-    let mut best: HashMap<String, (Target, f64)> = HashMap::new();
-    for (t, w) in seeds {
-        let e = best.entry(t.id.to_lowercase()).or_insert((t, w));
-        e.1 = e.1.max(w);
+    (seeds, r)
+}
+
+/// One entry per target id, keeping the strongest source (and its label).
+fn dedupe(seeds: Vec<Seed>) -> Vec<Seed> {
+    let mut best: HashMap<String, Seed> = HashMap::new();
+    for s in seeds {
+        let e = best.entry(s.0.id.to_lowercase()).or_insert_with(|| s.clone());
+        if s.1 > e.1 {
+            *e = s;
+        }
     }
-    let out: Vec<_> = best.into_values().collect();
-    r.total = out.len();
-    (out, r)
+    best.into_values().collect()
 }
 
 #[cfg(test)]

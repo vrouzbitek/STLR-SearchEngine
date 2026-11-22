@@ -57,6 +57,9 @@ pub struct Settings {
     /// Privacy switch: false = nothing (Wiki/DDG/LLM) ever leaves the PC.
     pub web_answers: bool,
     pub llm: Llm,
+    /// Set by the first-run wizard (Finish or Skip). Backend-owned: `update_settings` never changes it.
+    #[serde(rename = "onboarding_completed", alias = "onboardingCompleted")]
+    pub onboarding_completed: bool,
 }
 
 impl Default for Settings {
@@ -68,6 +71,7 @@ impl Default for Settings {
             learning_mode: LearningMode::Balanced,
             web_answers: true,
             llm: Llm::default(),
+            onboarding_completed: false,
         }
     }
 }
@@ -145,12 +149,14 @@ mod tests {
             learning_mode: LearningMode::Aggressive,
             web_answers: false,
             llm: Llm { provider: Provider::Gemini, api_key: "k-123".into(), model: "m".into(), base_url: String::new() },
+            onboarding_completed: true,
         };
         s.save(&p).unwrap();
         assert_eq!(Settings::load(&p), s);
         let raw = std::fs::read_to_string(&p).unwrap();
         assert!(raw.contains("\"learningMode\": \"aggressive\"") && raw.contains("\"provider\": \"gemini\""));
         assert!(raw.contains("\"theme\": \"stlr\""));
+        assert!(raw.contains("\"onboarding_completed\": true"));
         assert!(!p.with_extension("json.tmp").exists(), "temp file renamed away");
     }
 
@@ -162,6 +168,10 @@ mod tests {
         let s = Settings::load(&p);
         assert_eq!((s.shortcut.as_str(), s.web_answers, s.llm.provider), ("Alt+Q", true, Provider::Groq));
         assert_eq!(s.theme, Theme::Acrylic, "settings from before themes existed default to Acrylic");
+        assert!(!s.onboarding_completed, "missing flag = wizard not done yet");
+        let p = tmp("camel.json");
+        std::fs::write(&p, r#"{"onboardingCompleted":true}"#).unwrap();
+        assert!(Settings::load(&p).onboarding_completed, "camelCase alias accepted");
         let p = tmp("broken.json");
         std::fs::write(&p, "{not json").unwrap();
         assert_eq!(Settings::load(&p), Settings::default());

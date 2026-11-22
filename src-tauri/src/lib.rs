@@ -15,6 +15,7 @@ mod subactions;
 mod switcher;
 mod tabs;
 mod tray;
+mod wizard;
 
 use brain::{Brain, Commit, Stats, Target, Weights};
 use serde::Serialize;
@@ -336,6 +337,7 @@ fn update_settings(new: Settings, app: AppHandle) -> Result<Settings, String> {
     let st = app.state::<AppState>();
     let old = st.settings.lock().unwrap().clone();
     let mut applied = new.clone();
+    applied.onboarding_completed = old.onboarding_completed; // backend-owned (the panel doesn't send it)
     let mut err = None;
     if new.shortcut != old.shortcut {
         if let Err(e) = apply_shortcut(&app, &old.shortcut, &new.shortcut) {
@@ -370,6 +372,44 @@ fn update_settings(new: Settings, app: AppHandle) -> Result<Settings, String> {
 #[tauri::command]
 fn open_settings(app: AppHandle) {
     show_settings(&app);
+}
+
+#[tauri::command]
+fn open_wizard(app: AppHandle) {
+    show_wizard(&app);
+}
+
+/// Detected apps (taskbar / open / startup) and sites (open tabs, recently used bookmarks).
+#[tauri::command]
+async fn wizard_candidates() -> wizard::Candidates {
+    tauri::async_runtime::spawn_blocking(wizard::candidates).await.unwrap_or_default()
+}
+
+/// "Add app" autocomplete over the Start Menu index.
+#[tauri::command]
+fn wizard_search_apps(query: String) -> Vec<wizard::Item> {
+    apps::search(&brain::norm(&query), 6).into_iter().map(wizard::app_item).collect()
+}
+
+#[tauri::command]
+fn wizard_site(input: String) -> Option<wizard::Item> {
+    wizard::site_item(&input)
+}
+
+/// Finish (`seed = true`, only the checked items) or Skip (`seed = false`, nothing written).
+/// Both mark onboarding as completed. Returns brain rows written.
+#[tauri::command]
+fn wizard_finish(items: Vec<wizard::Item>, seed: bool, app: AppHandle) -> Result<usize, String> {
+    let st = app.state::<AppState>();
+    let rows = if seed { wizard::seed(&mut st.brain.lock().unwrap(), &items, now()) } else { 0 };
+    let mut s = st.settings.lock().unwrap();
+    s.onboarding_completed = true;
+    s.save(&st.dir.join("settings.json")).map_err(|e| format!("settings.json: {e}"))?;
+    drop(s);
+    if let Some(w) = app.get_webview_window("wizard") {
+        let _ = w.hide();
+    }
+    Ok(rows)
 }
 
 #[tauri::command]
@@ -448,9 +488,11 @@ fn apply_theme(app: &AppHandle, theme: settings::Theme) {
     if let Some(w) = app.get_webview_window("main") {
         apply_dwm(&w, theme);
     }
-    if let Some(w) = app.get_webview_window("settings") {
-        let light = theme == settings::Theme::Light;
-        let _ = w.set_theme(Some(if light { tauri::Theme::Light } else { tauri::Theme::Dark }));
+    let light = theme == settings::Theme::Light;
+    for label in ["settings", "wizard"] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.set_theme(Some(if light { tauri::Theme::Light } else { tauri::Theme::Dark }));
+        }
     }
     let _ = app.emit("theme-changed", theme);
 }
@@ -486,6 +528,19 @@ pub fn show_settings(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
         let _ = app.emit_to("settings", "settings-opened", ());
+    }
+}
+
+pub fn show_wizard(app: &AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    if let Some(w) = app.get_webview_window("wizard") {
+        let _ = w.center();
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        let _ = app.emit_to("wizard", "wizard-opened", ());
     }
 }
 
@@ -540,8 +595,12 @@ pub fn run() {
                 bookmarks::load();
                 apps::prewarm_targets();
                 subactions::activate(&packs_override);
-                // Cold start: seed only an empty brain (first run). Never delays the window.
-                if handle.state::<AppState>().brain.lock().unwrap().is_empty() {
+                // First run: the wizard decides what gets seeded (needs the index + .lnk targets above).
+                // After onboarding, an empty brain is still cold-start seeded automatically.
+                let onboarded = handle.state::<AppState>().settings.lock().unwrap().onboarding_completed;
+                if !onboarded {
+                    show_wizard(&handle);
+                } else if handle.state::<AppState>().brain.lock().unwrap().is_empty() {
                     let r = reseed(&handle);
                     eprintln!("brain: cold-start seeded {r:?}");
                 }
@@ -556,7 +615,8 @@ pub fn run() {
                 let _ = window.hide();
             }
             // Settings: closing just hides it (kept in RAM like the search bar).
-            ("settings", WindowEvent::CloseRequested { api, .. }) => {
+            // Closing the wizard with X = "later": it reopens on next launch until Finish or Skip.
+            ("settings" | "wizard", WindowEvent::CloseRequested { api, .. }) => {
                 api.prevent_close();
                 let _ = window.hide();
             }
@@ -575,6 +635,11 @@ pub fn run() {
             update_settings,
             get_status,
             open_settings,
+            open_wizard,
+            wizard_candidates,
+            wizard_search_apps,
+            wizard_site,
+            wizard_finish,
             run_system,
             subactions,
             copy_text,

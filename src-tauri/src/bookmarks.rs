@@ -11,6 +11,8 @@ struct Bookmark {
     lower: String,
     url: String,
     browser: &'static str,
+    /// Chromium `date_last_used` (falls back to `date_added`), µs since 1601. Used to rank "Detected Sites".
+    last_used: i64,
 }
 
 static BOOKMARKS: RwLock<Vec<Bookmark>> = RwLock::new(Vec::new());
@@ -54,7 +56,9 @@ fn walk(node: &Value, browser: &'static str, out: &mut Vec<Bookmark>) {
             let url = node["url"].as_str().unwrap_or("");
             if url.starts_with("http://") || url.starts_with("https://") {
                 let title = node["name"].as_str().filter(|s| !s.trim().is_empty()).unwrap_or(url).to_string();
-                out.push(Bookmark { lower: title.to_lowercase(), title, url: url.to_string(), browser });
+                let date = |k: &str| node[k].as_str().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+                let last_used = Some(date("date_last_used")).filter(|d| *d > 0).unwrap_or_else(|| date("date_added"));
+                out.push(Bookmark { lower: title.to_lowercase(), title, url: url.to_string(), browser, last_used });
             }
         }
         Some("folder") => {
@@ -66,7 +70,15 @@ fn walk(node: &Value, browser: &'static str, out: &mut Vec<Bookmark>) {
     }
 }
 
-fn host(url: &str) -> &str {
+/// Most recently used (or added) bookmarks: (title, url, browser).
+pub fn recent(n: usize) -> Vec<(String, String, &'static str)> {
+    let all = BOOKMARKS.read().unwrap();
+    let mut v: Vec<&Bookmark> = all.iter().collect();
+    v.sort_by(|a, b| b.last_used.cmp(&a.last_used));
+    v.into_iter().take(n).map(|b| (b.title.clone(), b.url.clone(), b.browser)).collect()
+}
+
+pub fn host(url: &str) -> &str {
     url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or("").trim_start_matches("www.")
 }
 
@@ -100,9 +112,9 @@ mod tests {
 
     const SAMPLE: &str = r#"{"roots":{
         "bookmark_bar":{"type":"folder","name":"Bar","children":[
-            {"type":"url","name":"GitHub","url":"https://github.com/"},
+            {"type":"url","name":"GitHub","url":"https://github.com/","date_added":"100","date_last_used":"900"},
             {"type":"folder","name":"Music","children":[
-                {"type":"url","name":"Playboi Carti – Spotify","url":"https://open.spotify.com/artist/x"},
+                {"type":"url","name":"Playboi Carti – Spotify","url":"https://open.spotify.com/artist/x","date_added":"500","date_last_used":"0"},
                 {"type":"url","name":"","url":"https://www.stellarclth.pl/shop"},
                 {"type":"url","name":"js","url":"javascript:alert(1)"}]}]},
         "other":{"type":"folder","name":"Other","children":[]},
@@ -131,6 +143,9 @@ mod tests {
         assert_eq!(hits[0].detail.as_deref(), Some("Chrome · open.spotify.com"));
         assert_eq!(search("stellarclth", 5).len(), 1, "matches by URL");
         assert!(search("", 5).is_empty());
+        // Recency: last used (900) beats added-only (500); never-dated bookmarks come last.
+        let r: Vec<_> = recent(2).into_iter().map(|(t, _, _)| t).collect();
+        assert_eq!(r, ["GitHub", "Playboi Carti – Spotify"]);
     }
 
     // cargo test --lib live_bookmarks -- --ignored --nocapture

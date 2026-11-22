@@ -122,6 +122,16 @@ pub struct BrowserStatus {
     pub tabs: usize,
 }
 
+/// Open http(s) tabs across connected browsers: (title, url, browser). For the first-run wizard.
+pub fn open_sites() -> Vec<(String, String, String)> {
+    let conns = CONNS.read().unwrap();
+    conns
+        .values()
+        .flat_map(|c| c.tabs.iter().map(move |t| (t.title.clone(), t.url.clone(), c.browser.clone())))
+        .filter(|(_, u, _)| u.starts_with("https://") || u.starts_with("http://"))
+        .collect()
+}
+
 /// Connected browsers for the settings panel.
 pub fn status() -> Vec<BrowserStatus> {
     let mut v: Vec<_> = CONNS.read().unwrap().values().map(|c| BrowserStatus { browser: c.browser.clone(), tabs: c.tabs.len() }).collect();
