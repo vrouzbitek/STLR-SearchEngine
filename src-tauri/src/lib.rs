@@ -480,6 +480,16 @@ fn apply_dwm(w: &tauri::WebviewWindow, theme: settings::Theme) {
     let m = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
     unsafe {
         let _ = DwmExtendFrameIntoClientArea(hwnd, &m);
+        // With the frame extended, DWM paints caption buttons (min/max/close) for any window that still has
+        // WS_SYSMENU / min / max box styles, even undecorated ones. The bar must have none.
+        use windows::Win32::UI::WindowsAndMessaging::*;
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let clean = style & !((WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0) as isize);
+        if clean != style {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, clean);
+            let flags = SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+            let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, flags);
+        }
     }
 }
 
@@ -581,6 +591,11 @@ pub fn run() {
                 let _ = gs.register(settings::SHORTCUTS[0]);
             }
             app.manage(AppState { brain: Mutex::new(brain), ctx: Mutex::new(String::new()), settings: Mutex::new(settings), dir: dir.clone() });
+            // Windows are declared with `"create": false` and built only now: a webview that loads instantly
+            // (release build, embedded assets) must never invoke a command before AppState is managed.
+            for cfg in app.config().app.windows.clone() {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.build()?;
+            }
             tray::build(app.handle())?;
             tabs::start();
             // Recent projects: rescan periodically so newly opened files show up under their app.
