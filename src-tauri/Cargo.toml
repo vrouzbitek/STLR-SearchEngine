@@ -1,8 +1,10 @@
 [package]
 name = "tauri-app"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Self-learning, keyboard-first Windows 11 launcher (Rust + Tauri v2)"
+authors = ["vrouz"]
+license = "MIT"
+repository = "https://github.com/vrouzbitek/STLR-SearchEngine"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
