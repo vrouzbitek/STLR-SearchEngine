@@ -73,6 +73,14 @@ export default function App() {
   const answerId = useRef(0);
   const topKind = useRef<string | undefined>(undefined);
   const inputRef = useRef<HTMLInputElement>(null);
+  // WebView fires mousemove when rows appear under a resting cursor: only a real move (new position) may select.
+  const mouse = useRef<string | null>(null);
+  const hover = (e: { screenX: number; screenY: number }, i: number) => {
+    const p = `${e.screenX},${e.screenY}`;
+    const moved = mouse.current !== null && mouse.current !== p;
+    mouse.current = p;
+    if (moved) setSel(i);
+  };
   // Abandon & retype tracking: longest query of the current streak, and the last one given up.
   const peak = useRef("");
   const abandoned = useRef<{ text: string; t: number } | null>(null);
@@ -165,6 +173,7 @@ export default function App() {
       setQuery("");
       setSel(0);
       setFlash(null);
+      mouse.current = null;
       peak.current = "";
       abandoned.current = null;
       inputRef.current?.focus();
@@ -349,7 +358,7 @@ export default function App() {
       </div>
       {card && (
         <div
-          onMouseMove={() => setSel(-1)}
+          onMouseMove={(e) => hover(e, -1)}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => copy(card.text)}
           className={`h-[88px] shrink-0 border-t border-[var(--line)] px-5 py-2.5 flex gap-3 cursor-default ${sel < 0 ? "bg-[var(--sel)]" : ""}`}
@@ -379,7 +388,7 @@ export default function App() {
             : list.map((h, i) => (
                 <li
                   key={h.path}
-                  onMouseMove={() => setSel(i)}
+                  onMouseMove={(e) => hover(e, i)}
                   onMouseDown={(e) => e.preventDefault()} // keep input focus
                   onClick={() => run(i)}
                   className={`h-11 flex items-center gap-3 pr-5 cursor-default ${h.child ? "pl-10" : "pl-5"} ${i === sel ? "bg-[var(--sel)]" : ""}`}
