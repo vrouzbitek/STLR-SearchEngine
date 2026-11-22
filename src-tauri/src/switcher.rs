@@ -117,7 +117,12 @@ pub fn resolve(path: &str) -> Option<String> {
             if let Some(t) = TARGETS.lock().unwrap().get(&key) {
                 return t.clone();
             }
-            let t = lnk_target(path).map(|s| s.to_lowercase()).filter(|s| s.ends_with(".exe"));
+            // Store/MSIX app shortcuts resolve to explorer.exe: matching that would "switch" to any Explorer window.
+            let t = if lnk_app_id(path).is_some() {
+                None
+            } else {
+                lnk_target(path).map(|s| s.to_lowercase()).filter(|s| s.ends_with(".exe"))
+            };
             TARGETS.lock().unwrap().insert(key, t.clone());
             t
         }
@@ -215,5 +220,15 @@ mod tests {
     fn pwa_window_is_not_the_browser() {
         super::refresh();
         assert!(!super::running_exes().iter().any(|e| e.ends_with("msedge.exe")), "{:?}", super::running_exes());
+    }
+
+    /// Manual: a Store app shortcut (Claude) with an Explorer window open must not count as running.
+    #[test]
+    #[ignore]
+    fn store_app_shortcut_is_not_explorer() {
+        let p = r"E:\ProgramData\Microsoft\Windows\Start Menu\Programs\🎮 Gamedev\Claude.lnk";
+        assert_eq!(super::resolve(p), None);
+        super::refresh();
+        assert!(!super::is_running(p));
     }
 }
