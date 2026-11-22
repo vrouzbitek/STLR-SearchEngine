@@ -1,4 +1,4 @@
-//! System commands (lock, sleep, shutdown, restart, empty bin). Matched by PL/EN aliases, all in RAM.
+//! System commands (the Start power/user menu + empty bin). Matched by PL/EN aliases, all in RAM.
 use crate::Hit;
 use std::os::windows::process::CommandExt;
 
@@ -14,9 +14,22 @@ struct Cmd {
     confirm: bool,
 }
 
-const CMDS: [Cmd; 5] = [
+const CMDS: [Cmd; 8] = [
     Cmd { id: "lock", name: "Lock screen", aliases: &["lock", "lock screen", "zablokuj", "zablokuj ekran"], confirm: false },
     Cmd { id: "sleep", name: "Sleep", aliases: &["sleep", "suspend", "uśpij", "uspij"], confirm: false },
+    Cmd { id: "hibernate", name: "Hibernate", aliases: &["hibernate", "hibernacja", "hibernuj", "zahibernuj"], confirm: false },
+    Cmd {
+        id: "switch-user",
+        name: "Switch user",
+        aliases: &["switch user", "change user", "zmień użytkownika", "zmien uzytkownika", "przełącz użytkownika", "przelacz uzytkownika"],
+        confirm: false,
+    },
+    Cmd {
+        id: "sign-out",
+        name: "Sign out",
+        aliases: &["sign out", "log out", "logout", "log off", "wyloguj", "wyloguj się", "wyloguj sie"],
+        confirm: true,
+    },
     Cmd { id: "shutdown", name: "Shut down", aliases: &["shutdown", "shut down", "power off", "wyłącz", "wylacz"], confirm: true },
     Cmd { id: "restart", name: "Restart", aliases: &["restart", "reboot", "uruchom ponownie"], confirm: true },
     Cmd {
@@ -57,6 +70,18 @@ pub fn run(path: &str, confirmed: bool) -> Result<(), String> {
             let ok = unsafe { windows::Win32::System::Power::SetSuspendState(false, false, false) };
             if ok { Ok(()) } else { Err("SetSuspendState failed".into()) }
         }
+        "hibernate" => {
+            let ok = unsafe { windows::Win32::System::Power::SetSuspendState(true, false, false) };
+            if ok { Ok(()) } else { Err("Hibernate is turned off on this PC (powercfg /h on)".into()) }
+        }
+        // What Start's "Switch user" does: leave the session running and go to the sign-in screen.
+        // (tsdiscon.exe would too, but Windows Home doesn't ship it.)
+        "switch-user" => unsafe {
+            use windows::Win32::System::RemoteDesktop::{WTSDisconnectSession, WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION};
+            WTSDisconnectSession(Some(WTS_CURRENT_SERVER_HANDLE), WTS_CURRENT_SESSION, false)
+        }
+        .map_err(|e| e.to_string()),
+        "sign-out" => shutdown_exe(&["/l"]),
         "shutdown" => shutdown_exe(&["/s", "/t", "0"]),
         "restart" => shutdown_exe(&["/r", "/t", "0"]),
         "empty-bin" => {
@@ -91,6 +116,13 @@ mod tests {
         assert_eq!(ids("wyłącz"), ["sys:shutdown"]);
         assert_eq!(ids("uruchom ponownie"), ["sys:restart"]);
         assert_eq!(ids("kosz"), ["sys:empty-bin"]);
+        assert_eq!(ids("wyloguj"), ["sys:sign-out"]);
+        assert_eq!(ids("log out"), ["sys:sign-out"]);
+        assert_eq!(ids("zmień"), ["sys:switch-user"]);
+        assert_eq!(ids("przelacz"), ["sys:switch-user"]);
+        assert_eq!(ids("switch user"), ["sys:switch-user"]);
+        assert_eq!(ids("hibernacja"), ["sys:hibernate"]);
+        assert_eq!(ids("wyl"), ["sys:sign-out", "sys:shutdown"]);
         assert!(ids("s").is_empty() && ids("sh").is_empty(), "too short for prefix match");
         assert!(ids("spotify").is_empty());
         assert!(search("restart")[0].score < -14.0, "beats any learned pin");
@@ -98,7 +130,7 @@ mod tests {
 
     #[test]
     fn destructive_commands_need_confirmation() {
-        for id in ["sys:shutdown", "sys:restart", "sys:empty-bin"] {
+        for id in ["sys:shutdown", "sys:restart", "sys:empty-bin", "sys:sign-out"] {
             assert_eq!(run(id, false), Err("confirmation required".into()));
         }
         assert!(run("sys:nope", true).is_err());

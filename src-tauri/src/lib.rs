@@ -205,6 +205,8 @@ async fn zero_query(app: AppHandle) -> Zero {
             .top("", &ctx, now(), 0.01)
             .into_iter()
             .filter(|(t, _)| routes::is_web(&t.kind) || t.kind == "action" || Path::new(&t.id).exists())
+            // Never offer to "switch" to the app the user is already in.
+            .filter(|(t, _)| ctx.is_empty() || switcher::window_exe(&t.id).as_deref() != Some(ctx.as_str()))
             .take(ZERO_RESULTS)
             .map(|(t, boost)| Hit::learned(t, -(boost as f32)))
             .collect();
@@ -549,26 +551,56 @@ fn apply_theme(app: &AppHandle, theme: settings::Theme) {
 
 // The windows are created once (hidden) and only shown/hidden afterwards, never destroyed.
 fn toggle(app: &AppHandle) {
+    toggle_at(app, None);
+}
+
+/// `start` = top-left of the Start button (physical px): open just above it instead of centered.
+pub fn toggle_at(app: &AppHandle, start: Option<(i32, i32)>) {
     let Some(w) = app.get_webview_window("main") else { return };
     if w.is_visible().unwrap_or(false) {
         let _ = w.hide();
     } else {
-        show_search(app);
+        show_search_at(app, start);
     }
 }
 
+/// While opened from Start: (left x, bottom y) the bar stays pinned to, so results grow upward.
+static ANCHOR: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+
 pub fn show_search(app: &AppHandle) {
+    show_search_at(app, None);
+}
+
+fn show_search_at(app: &AppHandle, start: Option<(i32, i32)>) {
     let Some(w) = app.get_webview_window("main") else { return };
     // Context = the app the user was in; must be read before our window takes the foreground.
     *app.state::<AppState>().ctx.lock().unwrap() = switcher::foreground_exe().unwrap_or_default();
-    let _ = w.set_size(LogicalSize::new(680.0, 72.0)); // back to bar-only before centering
-    let _ = w.center();
+    let anchor = start.and_then(|(x, top)| {
+        let m = w.primary_monitor().ok()??;
+        let gap = (8.0 * m.scale_factor()) as i32;
+        let width = (680.0 * m.scale_factor()) as i32;
+        let (mx, mw) = (m.position().x, m.size().width as i32);
+        Some((x.clamp(mx + gap, (mx + mw - width - gap).max(mx)), top - gap))
+    });
+    *ANCHOR.lock().unwrap() = anchor;
+    let _ = w.set_size(LogicalSize::new(680.0, 72.0)); // back to bar-only before positioning
+    match anchor {
+        Some(a) => pin_bottom(&w, a),
+        None => {
+            let _ = w.center();
+        }
+    }
     let _ = w.show();
     // Queued on the event loop after show() so it runs after tao has rewritten the style.
     let bar = w.clone();
     let _ = app.run_on_main_thread(move || strip_caption(&bar));
     let _ = w.set_focus();
-    let _ = app.emit("focus-input", ());
+    let _ = app.emit("focus-input", anchor.is_some()); // true = bar at the bottom, results above it
+}
+
+fn pin_bottom(w: &tauri::WebviewWindow, (x, bottom): (i32, i32)) {
+    let h = w.outer_size().map(|s| s.height as i32).unwrap_or(0);
+    let _ = w.set_position(tauri::PhysicalPosition::new(x, bottom - h));
 }
 
 pub fn show_settings(app: &AppHandle) {
@@ -677,6 +709,11 @@ pub fn run() {
         .on_window_event(|window, event| match (window.label(), event) {
             ("main", WindowEvent::Focused(false)) => {
                 let _ = window.hide();
+            }
+            ("main", WindowEvent::Resized(_)) => {
+                if let (Some(a), Some(w)) = (*ANCHOR.lock().unwrap(), window.app_handle().get_webview_window("main")) {
+                    pin_bottom(&w, a);
+                }
             }
             // Settings: closing just hides it (kept in RAM like the search bar).
             // Closing the wizard with X = "later": it reopens on next launch until Finish or Skip.

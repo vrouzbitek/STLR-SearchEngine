@@ -63,6 +63,8 @@ export default function App() {
   const [flash, setFlash] = useState<Info | null>(null);
   const [ghostFull, setGhostFull] = useState("");
   const [paused, setPaused] = useState(false);
+  const [anchored, setAnchored] = useState(false); // opened from the Start button: bar at the bottom
+  const [opened, setOpened] = useState(0);
   const [sel, setSel] = useState(0); // -1 = answer card
   const [answer, setAnswer] = useState<Answer | null>(null);
   const [armed, setArmed] = useState<string | null>(null); // path of a dangerous command awaiting 2nd Enter
@@ -166,10 +168,12 @@ export default function App() {
 
   useEffect(() => {
     win.setSize(new LogicalSize(WIDTH, BAR_H + (card ? CARD_H : 0) + (rowCount ? LIST_PAD + rowCount * ROW_H : 0)));
-  }, [rowCount, !!card]);
+  }, [rowCount, !!card, opened]); // `opened`: the backend shrinks the window to bar-only on every show
 
   useEffect(() => {
-    const un = listen("focus-input", () => {
+    const un = listen<boolean>("focus-input", (e) => {
+      setAnchored(!!e.payload);
+      setOpened((n) => n + 1);
       setQuery("");
       setSel(0);
       setFlash(null);
@@ -297,12 +301,11 @@ export default function App() {
         if (e.ctrlKey) openSource(card);
         else copy(card.text);
       } else run(Math.min(sel, list.length - 1));
-    } else if (e.key === "ArrowDown") {
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
-      setSel((s) => Math.min(s + 1, list.length - 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setSel((s) => Math.max(s - 1, card ? -1 : 0));
+      // Opened from Start the list grows upward, so ArrowUp walks away from the bar.
+      if ((e.key === "ArrowDown") !== anchored) setSel((s) => Math.min(s + 1, list.length - 1));
+      else setSel((s) => Math.max(s - 1, card ? -1 : 0));
     } else if (e.key === "ArrowRight" && !expanded && current?.kind === "app") {
       // Only when the caret is at the end, so ArrowRight still moves the cursor while editing.
       const el = inputRef.current;
@@ -323,9 +326,10 @@ export default function App() {
 
   // Shared by input and ghost layer so both sit on the same baseline (font comes from the theme).
   const line = "m-0 p-0 border-0 h-8 text-2xl leading-8 font-light";
+  const edge = anchored ? "border-b" : "border-t"; // divider on the side facing the bar
   return (
     // Fills the whole window: native DWM (Acrylic / corners) sits exactly behind this container.
-    <div className="h-full flex flex-col overflow-hidden rounded-[var(--radius)] border border-[var(--line)] bg-[var(--bg)] text-[var(--fg)]">
+    <div className={`h-full flex ${anchored ? "flex-col-reverse" : "flex-col"} overflow-hidden rounded-[var(--radius)] border border-[var(--line)] bg-[var(--bg)] text-[var(--fg)]`}>
       <div className="h-[70px] shrink-0 flex items-center gap-3 px-5">
         <ActionIcon kind={current?.kind ?? "search"} src={current && (icons[current.path] ?? current.icon ?? undefined)} />
         <div className="relative flex-1">
@@ -361,7 +365,7 @@ export default function App() {
           onMouseMove={(e) => hover(e, -1)}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => copy(card.text)}
-          className={`h-[88px] shrink-0 border-t border-[var(--line)] px-5 py-2.5 flex gap-3 cursor-default ${sel < 0 ? "bg-[var(--sel)]" : ""}`}
+          className={`h-[88px] shrink-0 ${edge} border-[var(--line)] px-5 py-2.5 flex gap-3 cursor-default ${sel < 0 ? "bg-[var(--sel)]" : ""}`}
         >
           <p className="flex-1 text-[13px] leading-5 line-clamp-3">{card.text}</p>
           <button
@@ -377,7 +381,7 @@ export default function App() {
         </div>
       )}
       {rowCount > 0 && (
-        <ul className="border-t border-[var(--line)] py-1">
+        <ul className={`${edge} border-[var(--line)] py-1 flex ${anchored ? "flex-col-reverse" : "flex-col"}`}>
           {isCmd
             ? infoRows.map((r, i) => (
                 <li key={i} className="h-11 flex items-center gap-3 px-5">

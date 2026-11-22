@@ -193,6 +193,14 @@ pub fn lnk_target(path: &str) -> Option<String> {
     unsafe { lnk_target_raw(path) }
 }
 
+/// Exe file name ("reaper.exe") of the process owning the app's open window, as `foreground_exe` names it.
+/// Goes through the window, so Store apps (keyed by AppUserModelID) compare the same way.
+pub fn window_exe(path: &str) -> Option<String> {
+    let h = *RUNNING.read().unwrap().get(&cached_target(path)?)?;
+    let p = process_path(window_pid(HWND(h as _)))?;
+    Path::new(&p).file_name().map(|n| n.to_string_lossy().to_lowercase())
+}
+
 pub fn is_running(path: &str) -> bool {
     cached_target(path).is_some_and(|t| RUNNING.read().unwrap().contains_key(&t))
 }
