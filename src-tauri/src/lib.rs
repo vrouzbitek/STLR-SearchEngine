@@ -632,6 +632,9 @@ pub fn show_wizard(app: &AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Default (Unfocused) makes Windows skip our own low-level keyboard hook while the bar has focus:
+        // the Win tap that should close the bar opened Start instead.
+        .device_event_filter(tauri::DeviceEventFilter::Always)
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {

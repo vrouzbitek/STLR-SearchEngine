@@ -40,25 +40,74 @@ const CMDS: [Cmd; 8] = [
     },
 ];
 
+/// Windows settings pages and tools: (id, name, ShellExecute target, PL/EN aliases). Tools that already have
+/// an English-named Start Menu shortcut (Task Manager, Registry Editor, Control Panel) get Polish aliases only,
+/// so an English query doesn't show them twice.
+const PAGES: [(&str, &str, &str, &[&str]); 27] = [
+    ("security", "Windows Security", "windowsdefender:", &["windows security", "zabezpieczenia windows", "zabezpieczenia", "windows defender", "defender", "antywirus", "antivirus"]),
+    ("settings", "Settings", "ms-settings:", &["settings", "windows settings", "ustawienia", "ustawienia windows"]),
+    ("update", "Windows Update", "ms-settings:windowsupdate", &["windows update", "update", "aktualizacje", "aktualizacja", "aktualizacje windows"]),
+    ("bluetooth", "Bluetooth & devices", "ms-settings:bluetooth", &["bluetooth", "urządzenia", "urzadzenia", "devices"]),
+    ("wifi", "Wi-Fi", "ms-settings:network-wifi", &["wifi", "wi-fi", "sieć", "siec", "network", "internet"]),
+    ("display", "Display", "ms-settings:display", &["display", "ekran", "wyświetlacz", "wyswietlacz", "rozdzielczość", "rozdzielczosc", "resolution", "skalowanie", "scaling"]),
+    ("sound", "Sound", "ms-settings:sound", &["sound", "dźwięk", "dzwiek", "audio"]),
+    ("apps", "Installed apps", "ms-settings:appsfeatures", &["installed apps", "uninstall", "zainstalowane aplikacje", "odinstaluj"]),
+    ("default-apps", "Default apps", "ms-settings:defaultapps", &["default apps", "domyślne aplikacje", "domyslne aplikacje"]),
+    ("startup-apps", "Startup apps", "ms-settings:startupapps", &["startup apps", "aplikacje autostartu"]),
+    ("personalization", "Personalization", "ms-settings:personalization", &["personalization", "personalizacja", "tapeta", "wallpaper", "background", "tło", "tlo"]),
+    ("taskbar", "Taskbar settings", "ms-settings:taskbar", &["taskbar", "pasek zadań", "pasek zadan"]),
+    ("power", "Power & battery", "ms-settings:powersleep", &["power", "power settings", "battery", "zasilanie", "opcje zasilania", "bateria"]),
+    ("storage", "Storage", "ms-settings:storagesense", &["storage", "disk space", "miejsce na dysku", "magazyn"]),
+    ("time", "Date & time", "ms-settings:dateandtime", &["date and time", "time", "data i godzina", "godzina", "czas"]),
+    ("language", "Language & region", "ms-settings:regionlanguage", &["language", "region", "język", "jezyk", "klawiatura", "keyboard layout"]),
+    ("mouse", "Mouse", "ms-settings:mousetouchpad", &["mouse", "touchpad", "mysz", "myszka"]),
+    ("notifications", "Notifications", "ms-settings:notifications", &["notifications", "powiadomienia"]),
+    ("privacy", "Privacy & security", "ms-settings:privacy", &["privacy", "prywatność", "prywatnosc"]),
+    ("accounts", "Accounts", "ms-settings:yourinfo", &["account", "accounts", "konto", "konta"]),
+    ("about", "About this PC", "ms-settings:about", &["about", "about pc", "system info", "informacje o komputerze", "o komputerze", "specyfikacja"]),
+    ("printers", "Printers & scanners", "ms-settings:printers", &["printers", "printer", "drukarki", "drukarka", "skaner"]),
+    ("device-manager", "Device Manager", "devmgmt.msc", &["device manager", "menedżer urządzeń", "menedzer urzadzen", "sterowniki", "drivers"]),
+    ("services", "Services", "services.msc", &["services", "usługi", "uslugi"]),
+    ("task-manager", "Task Manager", "taskmgr.exe", &["menedżer zadań", "menedzer zadan"]),
+    ("regedit", "Registry Editor", "regedit.exe", &["edytor rejestru", "rejestr"]),
+    ("control", "Control Panel", "control.exe", &["panel sterowania"]),
+];
+
+/// An exact settings alias beats files; a prefix ranks just below app prefix matches (1), so "win" still
+/// shows WinRAR before a dozen "windows ..." pages.
+const PAGE_EXACT: f32 = -1.0;
+const PAGE_PREFIX: f32 = 1.5;
+
 /// Exact alias, or alias prefix once the query has 3+ chars (so "s" doesn't surface "Shut down").
 pub fn search(q: &str) -> Vec<Hit> {
     let q = q.trim();
     let long_enough = q.chars().count() >= 3;
-    CMDS.iter()
-        .filter(|c| c.aliases.iter().any(|a| *a == q || (long_enough && a.starts_with(q))))
-        .map(|c| Hit {
-            name: c.name.into(),
-            path: format!("sys:{}", c.id),
-            kind: "system",
-            score: SYSTEM_SCORE,
-            detail: Some(if c.confirm { "Enter twice to confirm".into() } else { "System".into() }),
-            ..Default::default()
-        })
-        .collect()
+    let matches = |aliases: &[&str]| aliases.iter().any(|a| *a == q || (long_enough && a.starts_with(q)));
+    let cmds = CMDS.iter().filter(|c| matches(c.aliases)).map(|c| Hit {
+        name: c.name.into(),
+        path: format!("sys:{}", c.id),
+        kind: "system",
+        score: SYSTEM_SCORE,
+        detail: Some(if c.confirm { "Enter twice to confirm".into() } else { "System".into() }),
+        ..Default::default()
+    });
+    let pages = PAGES.iter().filter(|(.., al)| matches(al)).map(|(id, name, _, al)| Hit {
+        name: (*name).into(),
+        path: format!("sys:{id}"),
+        kind: "system",
+        score: if al.contains(&q) { PAGE_EXACT } else { PAGE_PREFIX },
+        detail: Some("Windows".into()),
+        ..Default::default()
+    });
+    cmds.chain(pages).collect()
 }
 
 pub fn run(path: &str, confirmed: bool) -> Result<(), String> {
     let id = path.strip_prefix("sys:").unwrap_or(path);
+    // Target comes from the table, never from the caller.
+    if let Some((_, _, target, _)) = PAGES.iter().find(|p| p.0 == id) {
+        return open(target);
+    }
     let cmd = CMDS.iter().find(|c| c.id == id).ok_or_else(|| format!("unknown command {id}"))?;
     if cmd.confirm && !confirmed {
         return Err("confirmation required".into());
@@ -96,6 +145,15 @@ pub fn run(path: &str, confirmed: bool) -> Result<(), String> {
     }
 }
 
+/// ShellExecute handles URIs (ms-settings:, windowsdefender:), .msc snap-ins and exes on PATH alike, incl. UAC.
+fn open(target: &str) -> Result<(), String> {
+    use windows::core::{w, HSTRING};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let r = unsafe { ShellExecuteW(None, w!("open"), &HSTRING::from(target), None, None, SW_SHOWNORMAL) };
+    if r.0 as isize > 32 { Ok(()) } else { Err(format!("could not open {target}")) }
+}
+
 fn shutdown_exe(args: &[&str]) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     std::process::Command::new("shutdown").args(args).creation_flags(CREATE_NO_WINDOW).spawn().map(|_| ()).map_err(|e| e.to_string())
@@ -126,6 +184,21 @@ mod tests {
         assert!(ids("s").is_empty() && ids("sh").is_empty(), "too short for prefix match");
         assert!(ids("spotify").is_empty());
         assert!(search("restart")[0].score < -14.0, "beats any learned pin");
+    }
+
+    #[test]
+    fn windows_pages() {
+        assert_eq!(ids("zabezpieczenia windows"), ["sys:security"]);
+        assert_eq!(ids("windows security"), ["sys:security"]);
+        assert_eq!(ids("zabezp"), ["sys:security"]);
+        assert_eq!(ids("ustawienia"), ["sys:settings"]);
+        assert_eq!(ids("menedżer urządzeń"), ["sys:device-manager"]);
+        assert_eq!(search("bluetooth")[0].score, PAGE_EXACT);
+        assert!(search("windows").iter().all(|h| h.score == PAGE_PREFIX), "prefix ranks below apps");
+        let mut seen = std::collections::HashSet::new();
+        for (id, ..) in PAGES {
+            assert!(seen.insert(id) && !CMDS.iter().any(|c| c.id == id), "duplicate id {id}");
+        }
     }
 
     #[test]

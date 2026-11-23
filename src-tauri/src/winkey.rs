@@ -1,7 +1,8 @@
 //! "Win" shortcut: a lone tap of the Windows key opens STLR instead of Start. Win+E, Win+R, Win+D...
-//! keep working: only a press and release with no other key in between counts. Start is suppressed the
-//! way AutoHotkey does it: the lone Win release is held back and replayed right after a no-op key (vkE8),
-//! so the shell sees "a combo happened" and doesn't open Start. Every other key passes untouched.
+//! keep working: only a press and release with no other key in between counts. The shell never sees a
+//! lone tap at all: Win down is held back; if another key follows, Win down is replayed right before it
+//! (so the combo reaches the shell intact), otherwise the release is swallowed too. (The older AutoHotkey
+//! trick, a no-op key before Win up, no longer stops Start on Windows 11 build 26200.)
 //! Implemented with a low-level keyboard hook on its own thread (installed on first enable).
 //! Same mode, mouse side: a left click on the taskbar's Start button opens STLR right above it.
 //! Win11 draws Start in XAML (no HWND), so its rect comes from UI Automation on a worker thread and is
@@ -26,7 +27,7 @@ static RECTS: Mutex<(RECT, RECT)> = Mutex::new((EMPTY, EMPTY));
 static REFRESH: OnceLock<SyncSender<()>> = OnceLock::new();
 /// We swallowed a Start button press, so its release must be swallowed too.
 static CLICK: AtomicBool = AtomicBool::new(false);
-static TAP: Mutex<Tap> = Mutex::new(Tap { win_down: false, combo: false });
+static TAP: Mutex<Tap> = Mutex::new(Tap { held: None, replayed: false });
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static HOOK: Once = Once::new();
 /// Marks our own injected mask key so the hook ignores it (other injected input, e.g. tests, still counts).
@@ -58,30 +59,45 @@ pub fn set(app: &AppHandle, on: bool) {
     }
 }
 
-/// Lone-tap detector. Returns true on the Win release that should open STLR.
+/// What the hook does with one key event.
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Act {
+    Pass,
+    Swallow,
+    /// First key of a combo: inject the held-back Win down, then this key.
+    Replay(u16),
+    /// Lone tap released: swallow it and open STLR.
+    Fire,
+}
+
+/// Lone-tap state: `held` = Win vk whose down we swallowed; `replayed` = the shell has it (combo).
 #[derive(Debug, PartialEq)]
 struct Tap {
-    win_down: bool,
-    combo: bool,
+    held: Option<u16>,
+    replayed: bool,
 }
 
 impl Tap {
-    fn step(&mut self, is_win: bool, down: bool) -> bool {
-        match (is_win, down) {
-            // Auto-repeat sends more Win downs: only the first one starts a new tap.
-            (true, true) => {
-                if !self.win_down {
-                    self.win_down = true;
-                    self.combo = false;
-                }
-                false
+    fn step(&mut self, vk: u16, down: bool) -> Act {
+        let is_win = vk == VK_LWIN.0 || vk == VK_RWIN.0;
+        match (is_win, down, self.held) {
+            // Auto-repeat while held: invisible until a combo replays Win, then the shell gets it as usual.
+            (true, true, Some(_)) => if self.replayed { Act::Pass } else { Act::Swallow },
+            (true, true, None) => {
+                self.held = Some(vk);
+                self.replayed = false;
+                Act::Swallow
             }
-            (false, true) => {
-                self.combo |= self.win_down;
-                false
+            (false, true, Some(w)) if !self.replayed => {
+                self.replayed = true;
+                Act::Replay(w)
             }
-            (true, false) => std::mem::replace(&mut self.win_down, false) && !self.combo,
-            (false, false) => false,
+            // Win up: a lone tap fires; after a combo the shell must see the release; a stray up passes.
+            (true, false, Some(_)) => {
+                self.held = None;
+                if self.replayed { Act::Pass } else { Act::Fire }
+            }
+            _ => Act::Pass,
         }
     }
 }
@@ -90,23 +106,42 @@ unsafe extern "system" fn hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
     if code >= 0 && ENABLED.load(Ordering::Relaxed) {
         let k = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
         if k.dwExtraInfo != OURS {
-            let is_win = k.vkCode == VK_LWIN.0 as u32 || k.vkCode == VK_RWIN.0 as u32;
             let down = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-            let fire = TAP.lock().map(|mut t| t.step(is_win, down)).unwrap_or(false);
-            if fire {
-                if let Some(app) = APP.get() {
-                    let a = app.clone();
-                    // Never block inside the hook (Windows drops slow LL hooks): hand off to the event loop.
-                    let _ = app.run_on_main_thread(move || crate::toggle(&a));
+            let act = TAP.lock().map(|mut t| t.step(k.vkCode as u16, down)).unwrap_or(Act::Pass);
+            match act {
+                Act::Pass => {}
+                Act::Swallow => return LRESULT(1),
+                Act::Replay(win) => {
+                    // Re-inject this key behind Win down so the shell sees them in order. If injection fails
+                    // (e.g. an elevated window has focus), the key passes alone: combo lost, nothing stuck.
+                    let ext = if k.flags.0 & LLKHF_EXTENDED.0 != 0 { KEYEVENTF_EXTENDEDKEY } else { KEYBD_EVENT_FLAGS(0) };
+                    if send(&[key(win, 0, KEYBD_EVENT_FLAGS(0)), key(k.vkCode as u16, k.scanCode as u16, ext)]) {
+                        return LRESULT(1);
+                    }
                 }
-                // Swallow this Win up and replay it after the mask key, so the order is guaranteed.
-                if mask_and_release(k.vkCode as u16) {
+                Act::Fire => {
+                    if let Some(app) = APP.get() {
+                        let a = app.clone();
+                        // Never block inside the hook (Windows drops slow LL hooks): hand off to the event loop.
+                        let _ = app.run_on_main_thread(move || crate::toggle(&a));
+                    }
                     return LRESULT(1);
                 }
             }
         }
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+fn key(vk: u16, scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), wScan: scan, dwFlags: flags, time: 0, dwExtraInfo: OURS } },
+    }
+}
+
+fn send(inputs: &[INPUT]) -> bool {
+    unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) == inputs.len() as u32 }
 }
 
 fn inside(r: &RECT, p: POINT) -> bool {
@@ -126,11 +161,15 @@ unsafe extern "system" fn mouse(code: i32, wparam: WPARAM, lparam: LPARAM) -> LR
                 }
             }
             WM_LBUTTONDOWN => {
-                let start = RECTS.lock().map(|r| r.1).unwrap_or(EMPTY);                if inside(&start, p) {
+                let start = RECTS.lock().map(|r| r.1).unwrap_or(EMPTY);
+                if inside(&start, p) {
                     if let Some(app) = APP.get() {
                         let a = app.clone();
                         let _ = app.run_on_main_thread(move || crate::toggle_at(&a, Some((start.left, start.top))));
                         CLICK.store(true, Ordering::SeqCst);
+                        // The swallowed click reaches no one, so Windows would refuse us the foreground (bar
+                        // shown unfocused, typing goes elsewhere). Being the source of the last input fixes it.
+                        mask();
                         return LRESULT(1);
                     }
                 }
@@ -152,7 +191,8 @@ fn locate_loop(rx: std::sync::mpsc::Receiver<()>) {
     let mut button: Option<IUIAutomationElement> = None;
     loop {
         if ENABLED.load(Ordering::Relaxed) {
-            let found = locate(&uia, &mut button);            if let Ok(mut r) = RECTS.lock() {
+            let found = locate(&uia, &mut button);
+            if let Ok(mut r) = RECTS.lock() {
                 *r = found.unwrap_or((EMPTY, EMPTY)); // not found = never intercept (Start works as usual)
             }
         }
@@ -189,40 +229,44 @@ fn locate(uia: &IUIAutomation, button: &mut Option<IUIAutomationElement>) -> Opt
     }
 }
 
-/// Injects mask down, mask up, Win up. Returns false if nothing could be injected: the caller then lets
-/// the real Win up through, so Win can never get stuck down (worst case Start opens as usual).
-fn mask_and_release(win_vk: u16) -> bool {
-    let key = |vk, flags| INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: OURS } },
-    };
-    let inputs = [key(MASK_VK, KEYBD_EVENT_FLAGS(0)), key(MASK_VK, KEYEVENTF_KEYUP), key(win_vk, KEYEVENTF_KEYUP)];
-    unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) == inputs.len() as u32 }
+/// Injects a no-op key press (ignored by our keyboard hook via OURS).
+fn mask() {
+    send(&[key(MASK_VK, 0, KEYBD_EVENT_FLAGS(0)), key(MASK_VK, 0, KEYEVENTF_KEYUP)]);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Tap;
+    use super::{Act, Tap};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_LWIN, VK_RWIN};
 
-    fn run(keys: &[(bool, bool)]) -> Vec<bool> {
-        let mut t = Tap { win_down: false, combo: false };
-        keys.iter().map(|&(w, d)| t.step(w, d)).collect()
+    const WIN: u16 = VK_LWIN.0;
+    const E: u16 = 0x45;
+
+    fn run(keys: &[(u16, bool)]) -> Vec<Act> {
+        let mut t = Tap { held: None, replayed: false };
+        keys.iter().map(|&(vk, d)| t.step(vk, d)).collect()
     }
 
     #[test]
-    fn lone_tap_fires_once() {
-        assert_eq!(run(&[(true, true), (true, false)]), [false, true]);
+    fn lone_tap_is_invisible_to_the_shell_and_fires_once() {
+        assert_eq!(run(&[(WIN, true), (WIN, false)]), [Act::Swallow, Act::Fire]);
         // auto-repeat while held is still a lone tap
-        assert_eq!(run(&[(true, true), (true, true), (true, true), (true, false)]), [false, false, false, true]);
+        assert_eq!(run(&[(WIN, true), (WIN, true), (WIN, true), (WIN, false)]), [Act::Swallow, Act::Swallow, Act::Swallow, Act::Fire]);
+        assert_eq!(run(&[(VK_RWIN.0, true), (VK_RWIN.0, false)]), [Act::Swallow, Act::Fire]);
     }
 
     #[test]
-    fn combos_and_other_keys_never_fire() {
-        // Win+E
-        assert_eq!(run(&[(true, true), (false, true), (false, false), (true, false)]), [false; 4]);
+    fn combos_reach_the_shell_intact() {
+        // Win+E: Win replayed right before E, then everything passes, including the Win release.
+        assert_eq!(run(&[(WIN, true), (E, true), (E, false), (WIN, false)]), [Act::Swallow, Act::Replay(WIN), Act::Pass, Act::Pass]);
+        // Win+Shift+S: only the first key replays Win; repeats after that pass.
+        assert_eq!(
+            run(&[(WIN, true), (0x10, true), (WIN, true), (0x53, true), (0x53, false), (0x10, false), (WIN, false)]),
+            [Act::Swallow, Act::Replay(WIN), Act::Pass, Act::Pass, Act::Pass, Act::Pass, Act::Pass]
+        );
         // typing without Win, and a stray Win up (e.g. pressed before the hook existed)
-        assert_eq!(run(&[(false, true), (false, false), (true, false)]), [false; 3]);
+        assert_eq!(run(&[(E, true), (E, false), (WIN, false)]), [Act::Pass; 3]);
         // a combo doesn't poison the next lone tap
-        assert_eq!(run(&[(true, true), (false, true), (true, false), (true, true), (true, false)]), [false, false, false, false, true]);
+        assert_eq!(run(&[(WIN, true), (E, true), (WIN, false), (WIN, true), (WIN, false)])[3..], [Act::Swallow, Act::Fire]);
     }
 }
