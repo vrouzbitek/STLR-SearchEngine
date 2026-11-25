@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  frontend:
+    name: Frontend (tsc + vite build)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Vite build
+        run: npx vite build
+
+  rust:
+    name: Rust (cargo test + clippy)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      # tauri::generate_context! needs frontendDist (../dist) to exist at compile time.
+      - name: Build frontend dist
+        working-directory: .
+        run: |
+          npm ci --no-audit --no-fund
+          npx vite build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # A fresh runner profile has no Pictures\Screenshots folder (Windows creates it on the first
+      # Win+PrtScn), so FOLDERID_Screenshots does not resolve and folders::tests::known_folders fails.
+      - name: Create Screenshots known folder
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path (Join-Path ([Environment]::GetFolderPath('MyPictures')) 'Screenshots') | Out-Null
+      # #[ignore] tests (live-system checks) are skipped by default.
+      - name: cargo test
+        run: cargo test --locked
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets
