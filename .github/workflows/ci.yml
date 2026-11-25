@@ -22,8 +22,8 @@ jobs:
     name: Frontend (tsc + vite build)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -40,8 +40,8 @@ jobs:
       run:
         working-directory: src-tauri
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -57,6 +57,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      # A fresh runner profile has no Pictures\Screenshots folder (Windows creates it on the first
+      # Win+PrtScn), so FOLDERID_Screenshots does not resolve and folders::tests::known_folders fails.
+      - name: Create Screenshots known folder
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path (Join-Path ([Environment]::GetFolderPath('MyPictures')) 'Screenshots') | Out-Null
       # #[ignore] tests (live-system checks) are skipped by default.
       - name: cargo test
         run: cargo test --locked
