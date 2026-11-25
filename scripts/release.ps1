@@ -14,11 +14,23 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "Version must look like 1.2.3"
 if (git status --porcelain) { throw "Working tree not clean: commit first" }
 if (-not (Test-Path $Key)) { throw "Signing key not found: $Key" }
 
-# 1. Bump the version (tauri.conf.json is what the updater compares against). UTF-8 without BOM.
+# 1. Bump the version everywhere it lives (tauri.conf.json is what the updater compares against;
+#    package.json/Cargo.toml and their lockfiles are kept in step). UTF-8 without BOM, line endings kept.
+function Set-Version([string]$File, [string]$Pattern, [string]$Replacement, [int]$Count) {
+    $text = [IO.File]::ReadAllText("$root\$File")
+    $re = [regex]::new($Pattern, [Text.RegularExpressions.RegexOptions]::Multiline)
+    if ($re.Matches($text).Count -lt $Count) { throw "Version field not found in $File" }
+    [IO.File]::WriteAllText("$root\$File", $re.Replace($text, $Replacement, $Count), (New-Object Text.UTF8Encoding $false))
+}
 $conf = "src-tauri\tauri.conf.json"
-$json = [IO.File]::ReadAllText("$root\$conf")
-$json = $json -replace '"version":\s*"[^"]+"', "`"version`": `"$Version`""
-[IO.File]::WriteAllText("$root\$conf", $json, (New-Object Text.UTF8Encoding $false))
+$bumped = @($conf, "package.json", "package-lock.json", "src-tauri\Cargo.toml", "src-tauri\Cargo.lock")
+Set-Version $conf '"version":\s*"[^"]+"' "`"version`": `"$Version`"" 1
+Set-Version "package.json" '"version":\s*"[^"]+"' "`"version`": `"$Version`"" 1
+# package-lock.json: the root entry and packages[""], which are the first two "version" fields.
+Set-Version "package-lock.json" '"version":\s*"[^"]+"' "`"version`": `"$Version`"" 2
+# Cargo.toml: the first top-level version line is the [package] one.
+Set-Version "src-tauri\Cargo.toml" '^version\s*=\s*"[^"]+"' "version = `"$Version`"" 1
+Set-Version "src-tauri\Cargo.lock" '(name = "tauri-app"\r?\nversion = )"[^"]+"' "`${1}`"$Version`"" 1
 
 # 2. Signed build (updater artifacts only here, so plain `npm run tauri build` needs no key).
 $env:TAURI_SIGNING_PRIVATE_KEY = [IO.File]::ReadAllText($Key)
@@ -51,7 +63,7 @@ $latest = [ordered]@{
 [IO.File]::WriteAllText("$out\latest.json", ($latest | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding $false))
 
 # 4. Commit, tag, publish.
-git commit -q -m "release: v$Version" -- $conf
+git commit -q -m "release: v$Version" -- $bumped
 git tag "v$Version"
 git push origin HEAD "v$Version"
 gh release create "v$Version" "$out\$asset" "$out\latest.json" --title "STLR Search $Version" --notes $Notes
