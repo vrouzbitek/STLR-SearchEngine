@@ -17,6 +17,8 @@ mod switcher;
 mod tabs;
 mod tray;
 mod updater;
+#[cfg(test)]
+mod perf_budget;
 mod winkey;
 mod wizard;
 
@@ -127,22 +129,7 @@ fn search_local(query: String, st: State<'_, AppState>) -> Local {
     let q = brain::norm(&query);
     let ctx = st.ctx.lock().unwrap().clone();
     let b = st.brain.lock().unwrap();
-    let mut hits = apps::search(&q, CANDIDATES);
-    hits.extend(routes::calc(&query));
-    hits.extend(commands::search(&q));
-    hits.extend(folders::search(&q));
-    hits.extend(tabs::search(&q, MAX_RESULTS));
-    hits.extend(bookmarks::search(&q, MAX_RESULTS));
-    hits.extend(routes::web(&query));
-    // Learned targets whose name doesn't match (abandon/retype links, learned files/folders/web).
-    // Sub-actions only ever appear under their app, never as standalone top-level results.
-    for (t, _) in b.top(&q, &ctx, now(), b.w.inject_threshold) {
-        if !matches!(t.kind.as_str(), "action" | "recent") && !hits.iter().any(|h| h.path.eq_ignore_ascii_case(&t.id)) {
-            hits.push(Hit::learned(t, NO_MATCH));
-        }
-    }
-    rerank(&b, &q, &ctx, &mut hits);
-    hits.truncate(MAX_RESULTS);
+    let mut hits = rank_local(&b, &query, &q, &ctx);
     mark_running(&mut hits);
     // #1 is an app: show its best 3 sub-actions / recent projects right under it.
     if let Some(app) = hits.first().filter(|h| h.kind == "app") {
@@ -152,6 +139,28 @@ fn search_local(query: String, st: State<'_, AppState>) -> Local {
         hits.splice(1..1, subs);
     }
     Local { hits, ghost: b.ghost(&q) }
+}
+
+/// The per-keystroke ranking core of `search_local`: every in-RAM source + brain re-rank, no window
+/// lookups. `query` is raw (calc / web routes), `q` normalized. Budget: <1 ms (see `perf_budget` tests).
+fn rank_local(b: &Brain, query: &str, q: &str, ctx: &str) -> Vec<Hit> {
+    let mut hits = apps::search(q, CANDIDATES);
+    hits.extend(routes::calc(query));
+    hits.extend(commands::search(q));
+    hits.extend(folders::search(q));
+    hits.extend(tabs::search(q, MAX_RESULTS));
+    hits.extend(bookmarks::search(q, MAX_RESULTS));
+    hits.extend(routes::web(query));
+    // Learned targets whose name doesn't match (abandon/retype links, learned files/folders/web).
+    // Sub-actions only ever appear under their app, never as standalone top-level results.
+    for (t, _) in b.top(q, ctx, now(), b.w.inject_threshold) {
+        if !matches!(t.kind.as_str(), "action" | "recent") && !hits.iter().any(|h| h.path.eq_ignore_ascii_case(&t.id)) {
+            hits.push(Hit::learned(t, NO_MATCH));
+        }
+    }
+    rerank(b, q, ctx, &mut hits);
+    hits.truncate(MAX_RESULTS);
+    hits
 }
 
 const INLINE_CHILDREN: usize = 3;

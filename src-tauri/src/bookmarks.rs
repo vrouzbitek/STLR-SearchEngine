@@ -134,11 +134,21 @@ pub fn search(q: &str, max: usize) -> Vec<Hit> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Tests that swap the global BOOKMARKS list must not run at the same time.
     static GLOBAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Run `f` with BOOKMARKS swapped for `(title, url)` fixtures, holding the same lock as the tests below.
+    pub(crate) fn with_fixture<R>(items: &[(String, String)], f: impl FnOnce() -> R) -> R {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        *BOOKMARKS.write().unwrap() = items
+            .iter()
+            .map(|(t, u)| Bookmark { title: t.clone(), lower: t.to_lowercase(), url: u.clone(), browser: "Edge", last_used: 0, link: false })
+            .collect();
+        f()
+    }
 
     const SAMPLE: &str = r#"{"roots":{
         "bookmark_bar":{"type":"folder","name":"Bar","children":[
