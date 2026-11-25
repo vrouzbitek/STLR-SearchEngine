@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.0"
+version = "0.3.7"
 description = "Self-learning, keyboard-first Windows 11 launcher (Rust + Tauri v2)"
 authors = ["vrouz"]
 license = "MIT"
