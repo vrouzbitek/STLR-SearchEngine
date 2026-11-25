@@ -24,6 +24,18 @@ pub fn index() {
     *APPS.write().unwrap() = out;
 }
 
+/// Replace the index with fixture apps (`perf_budget` tests); paths are fake `.lnk`s under `C:\\Fixture`.
+#[cfg(test)]
+pub fn set_fixture(names: &[String]) {
+    let mut out: Vec<App> = names
+        .iter()
+        .map(|n| App { name: n.clone(), lower: n.to_lowercase(), path: format!(r"C:\Fixture\{n}.lnk") })
+        .collect();
+    out.sort_by(|a, b| a.lower.cmp(&b.lower));
+    out.dedup_by(|a, b| a.lower == b.lower);
+    *APPS.write().unwrap() = out;
+}
+
 /// (name, Start Menu path) of every indexed app.
 pub fn all() -> Vec<(String, String)> {
     APPS.read().unwrap().iter().map(|a| (a.name.clone(), a.path.clone())).collect()

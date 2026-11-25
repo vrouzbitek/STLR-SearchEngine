@@ -151,12 +151,14 @@ src-tauri/src/
   switcher.rs     foreground context, EnumWindows switch-to-window, .lnk / MSIX resolution
   icons.rs        native icons (IShellItemImageFactory, MSIX logos) cached as PNG
   answers.rs      AnswerProvider trait: DuckDuckGo, Wikipedia, optional LLM
+  perf_budget.rs  per-keystroke latency regression test (<1 ms on a fixture index)
   routes.rs calc.rs commands.rs seeder.rs settings.rs autostart.rs tray.rs clipboard.rs
 src/              React + Tailwind UI (search bar, settings window, themes)
 extension/        Manifest V3 tabs bridge
 ```
 
 Run the tests with `cargo test` in `src-tauri/` (live-system checks are `#[ignore]`d: `cargo test -- --ignored --nocapture`).
+`perf_budget` is the latency regression test: it types every prefix of a set of queries against a fixed fixture index (600 apps, 3,000 bookmarks, 2,000 learned picks) and fails if any keystroke's median local search time exceeds 1 ms (`cargo test perf_budget -- --nocapture` prints the numbers).
 
 ## License
 
