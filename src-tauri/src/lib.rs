@@ -633,8 +633,10 @@ pub fn show_wizard(app: &AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     log::install_panic_hook();
+    let context = tauri::generate_context!();
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
-    log::line(&format!("start v{} exe={exe} args={:?}", env!("CARGO_PKG_VERSION"), std::env::args().skip(1).collect::<Vec<_>>()));
+    // tauri.conf.json carries the real app version (Cargo.toml's stays 0.1.0).
+    log::line(&format!("start v{} exe={exe} args={:?}", context.package_info().version, std::env::args().skip(1).collect::<Vec<_>>()));
     tauri::Builder::default()
         // Default (Unfocused) makes Windows skip our own low-level keyboard hook while the bar has focus:
         // the Win tap that should close the bar opened Start instead.
@@ -699,7 +701,7 @@ pub fn run() {
             get_icon,
             launch
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .unwrap_or_else(|e| {
             log::line(&format!("startup failed: {e}"));
             std::process::exit(1);
