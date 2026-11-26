@@ -9,6 +9,7 @@ mod commands;
 mod everything;
 mod folders;
 mod icons;
+mod log;
 mod routes;
 mod seeder;
 mod settings;
@@ -631,6 +632,9 @@ pub fn show_wizard(app: &AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    log::install_panic_hook();
+    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    log::line(&format!("start v{} exe={exe} args={:?}", env!("CARGO_PKG_VERSION"), std::env::args().skip(1).collect::<Vec<_>>()));
     tauri::Builder::default()
         // Default (Unfocused) makes Windows skip our own low-level keyboard hook while the bar has focus:
         // the Win tap that should close the bar opened Start instead.
@@ -646,70 +650,14 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
-        .setup(|app| {
-            let dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&dir)?;
-            let w: Weights = match std::fs::read_to_string(dir.join("weights.json")) {
-                Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
-                    eprintln!("weights.json invalid ({e}), using defaults");
-                    Weights::default()
-                }),
-                Err(_) => Weights::default(),
-            };
-            let brain = Brain::open(&dir.join("brain.db"), w.clone()).unwrap_or_else(|e| {
-                eprintln!("brain.db unavailable ({e}), learning only for this session");
-                Brain::in_memory(w)
-            });
-            let mut settings = Settings::load(&dir.join("settings.json"));
-            settings.autostart = autostart::is_enabled();
-            answers::configure(settings.web_answers, &settings.llm);
-            // Saved shortcut, falling back to the default if another app owns it.
-            let gs = app.global_shortcut();
-            if settings.shortcut == settings::WIN_KEY {
-                winkey::set(app.handle(), true);
-            } else if let Err(e) = gs.register(settings.shortcut.as_str()) {
-                eprintln!("shortcut {} unavailable ({e}), using {}", settings.shortcut, settings::SHORTCUTS[0]);
-                settings.shortcut = settings::SHORTCUTS[0].into();
-                let _ = gs.register(settings::SHORTCUTS[0]);
-            }
-            app.manage(AppState { brain: Mutex::new(brain), ctx: Mutex::new(String::new()), settings: Mutex::new(settings), dir: dir.clone() });
-            // Windows are declared with `"create": false` and built only now: a webview that loads instantly
-            // (release build, embedded assets) must never invoke a command before AppState is managed.
-            for cfg in app.config().app.windows.clone() {
-                tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.build()?;
-            }
-            tray::build(app.handle())?;
-            updater::start(app.handle());
-            tabs::start();
-            // Recent projects: rescan periodically so newly opened files show up under their app.
-            std::thread::spawn(|| loop {
-                subactions::scan_recent();
-                std::thread::sleep(std::time::Duration::from_secs(subactions::RESCAN_SECS));
-            });
-            let handle = app.handle().clone();
-            let packs_override = dir.join("actions.json");
-            let links = dir.join("links.json");
-            std::thread::spawn(move || {
-                apps::index();
-                bookmarks::load(&links);
-                apps::prewarm_targets();
-                subactions::activate(&packs_override);
-                // First run: the wizard decides what gets seeded (needs the index + .lnk targets above).
-                // After onboarding, an empty brain is still cold-start seeded automatically.
-                let onboarded = handle.state::<AppState>().settings.lock().unwrap().onboarding_completed;
-                if !onboarded {
-                    show_wizard(&handle);
-                } else if handle.state::<AppState>().brain.lock().unwrap().is_empty() {
-                    let r = reseed(&handle);
-                    eprintln!("brain: cold-start seeded {r:?}");
-                }
-                apps::prewarm_icons();
-            });
-            let theme = app.state::<AppState>().settings.lock().unwrap().theme;
-            apply_theme(app.handle(), theme);
-            Ok(())
-        })
+        .setup(|app| setup_app(app).inspect_err(|e| log::line(&format!("setup failed: {e}"))))
         .on_window_event(|window, event| match (window.label(), event) {
+            // Never destroy the bar (it stays in RAM for an instant toggle), whoever sends WM_CLOSE.
+            ("main", WindowEvent::CloseRequested { api, .. }) => {
+                log::line("close requested on the search bar, hiding instead");
+                api.prevent_close();
+                let _ = window.hide();
+            }
             ("main", WindowEvent::Focused(false)) => {
                 let _ = window.hide();
             }
@@ -751,8 +699,86 @@ pub fn run() {
             get_icon,
             launch
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .unwrap_or_else(|e| {
+            log::line(&format!("startup failed: {e}"));
+            std::process::exit(1);
+        })
+        .run(|_app, event| match event {
+            // The bar lives in the tray: only an explicit exit (tray Quit, updater) may end the process,
+            // never the last window going away.
+            tauri::RunEvent::ExitRequested { code: None, api, .. } => {
+                log::line("exit requested without a code (last window closed), staying in the tray");
+                api.prevent_exit();
+            }
+            tauri::RunEvent::Exit => log::line("exit"),
+            _ => {}
+        });
+}
+
+fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let w: Weights = match std::fs::read_to_string(dir.join("weights.json")) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            eprintln!("weights.json invalid ({e}), using defaults");
+            Weights::default()
+        }),
+        Err(_) => Weights::default(),
+    };
+    let brain = Brain::open(&dir.join("brain.db"), w.clone()).unwrap_or_else(|e| {
+        eprintln!("brain.db unavailable ({e}), learning only for this session");
+        Brain::in_memory(w)
+    });
+    let mut settings = Settings::load(&dir.join("settings.json"));
+    settings.autostart = autostart::is_enabled();
+    answers::configure(settings.web_answers, &settings.llm);
+    // Saved shortcut, falling back to the default if another app owns it.
+    let gs = app.global_shortcut();
+    if settings.shortcut == settings::WIN_KEY {
+        winkey::set(app.handle(), true);
+    } else if let Err(e) = gs.register(settings.shortcut.as_str()) {
+        log::line(&format!("shortcut {} unavailable ({e}), using {}", settings.shortcut, settings::SHORTCUTS[0]));
+        settings.shortcut = settings::SHORTCUTS[0].into();
+        let _ = gs.register(settings::SHORTCUTS[0]);
+    }
+    app.manage(AppState { brain: Mutex::new(brain), ctx: Mutex::new(String::new()), settings: Mutex::new(settings), dir: dir.clone() });
+    // Windows are declared with `"create": false` and built only now: a webview that loads instantly
+    // (release build, embedded assets) must never invoke a command before AppState is managed.
+    for cfg in app.config().app.windows.clone() {
+        tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.build()?;
+    }
+    tray::build(app.handle())?;
+    updater::start(app.handle());
+    tabs::start();
+    // Recent projects: rescan periodically so newly opened files show up under their app.
+    std::thread::spawn(|| loop {
+        subactions::scan_recent();
+        std::thread::sleep(std::time::Duration::from_secs(subactions::RESCAN_SECS));
+    });
+    let handle = app.handle().clone();
+    let packs_override = dir.join("actions.json");
+    let links = dir.join("links.json");
+    std::thread::spawn(move || {
+        apps::index();
+        bookmarks::load(&links);
+        apps::prewarm_targets();
+        subactions::activate(&packs_override);
+        // First run: the wizard decides what gets seeded (needs the index + .lnk targets above).
+        // After onboarding, an empty brain is still cold-start seeded automatically.
+        let onboarded = handle.state::<AppState>().settings.lock().unwrap().onboarding_completed;
+        if !onboarded {
+            show_wizard(&handle);
+        } else if handle.state::<AppState>().brain.lock().unwrap().is_empty() {
+            let r = reseed(&handle);
+            eprintln!("brain: cold-start seeded {r:?}");
+        }
+        apps::prewarm_icons();
+    });
+    let theme = app.state::<AppState>().settings.lock().unwrap().theme;
+    apply_theme(app.handle(), theme);
+    log::line("ready");
+    Ok(())
 }
 
 #[cfg(test)]

@@ -151,6 +151,7 @@ src-tauri/src/
   switcher.rs     foreground context, EnumWindows switch-to-window, .lnk / MSIX resolution
   icons.rs        native icons (IShellItemImageFactory, MSIX logos) cached as PNG
   answers.rs      AnswerProvider trait: DuckDuckGo, Wikipedia, optional LLM
+  log.rs          lifecycle log (%APPDATA%\com.stlr.searchengine\stlr.log): start, setup errors, panics, exit
   routes.rs calc.rs commands.rs seeder.rs settings.rs autostart.rs tray.rs clipboard.rs
 src/              React + Tailwind UI (search bar, settings window, themes)
 extension/        Manifest V3 tabs bridge
